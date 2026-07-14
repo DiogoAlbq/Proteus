@@ -38,11 +38,43 @@ proteus --cores 4 ./jogo
 
 ## Instalação
 
-Copie o script `proteus` para um diretório no `PATH` e torne-o executável:
+### Opção 1 — Via git clone (recomendado)
+
+Clone o repositório e instale o script no `PATH`:
 
 ```bash
+git clone https://github.com/DiogoAlbq/Proteus.git
+cd Proteus
 sudo cp proteus /usr/local/bin/proteus
 sudo chmod 755 /usr/local/bin/proteus
+```
+
+Para atualizar no futuro, basta rodar `git pull` dentro da pasta clonada e repetir o `cp`.
+
+### Opção 2 — Instalação manual (sem git)
+
+Baixe o arquivo `proteus` diretamente do GitHub e instale:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DiogoAlbq/Proteus/main/proteus -o /tmp/proteus
+sudo cp /tmp/proteus /usr/local/bin/proteus
+sudo chmod 755 /usr/local/bin/proteus
+```
+
+Ou, sem `curl`, usando `wget`:
+
+```bash
+wget -qO /tmp/proteus https://raw.githubusercontent.com/DiogoAlbq/Proteus/main/proteus
+sudo cp /tmp/proteus /usr/local/bin/proteus
+sudo chmod 755 /usr/local/bin/proteus
+```
+
+### Verificação
+
+Após a instalação, verifique se o comando está disponível:
+
+```bash
+proteus --help
 ```
 
 ## Como funciona
