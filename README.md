@@ -58,20 +58,23 @@ Opções:
 
 ## Instalação (Windows)
 
-### Opção 1 — Via git clone
+### Opção 1 — Via git clone + instalador (recomendado)
 
 ```powershell
 git clone https://github.com/DiogoAlbq/Proteus.git
 cd Proteus
-# Opcional: copiar para uma pasta no PATH
-Copy-Item proteus.ps1 "$env:USERPROFILE\proteus.ps1"
+.\install.ps1
 ```
 
-### Opção 2 — Download manual
+### Opção 2 — Baixar ZIP e rodar o instalador
+
+Baixe o ZIP do repositório, extraia em qualquer pasta e execute:
 
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/DiogoAlbq/Proteus/main/proteus.ps1" -OutFile "proteus.ps1"
+.\install.ps1
 ```
+
+> O instalador copia `proteus.ps1` para `%USERPROFILE%\proteus.ps1` **sobrescrevendo** qualquer versão anterior, sem conectarse à internet.
 
 ### Verificação (Windows)
 
@@ -144,36 +147,23 @@ proteus --cores 4 --mem 6144 ./jogo
 
 ## Instalação
 
-### Opção 1 — Via git clone (recomendado)
-
-Clone o repositório e instale o script no `PATH`:
+### Opção 1 — Via git clone + instalador (recomendado)
 
 ```bash
 git clone https://github.com/DiogoAlbq/Proteus.git
 cd Proteus
-sudo cp proteus /usr/local/bin/proteus
-sudo chmod 755 /usr/local/bin/proteus
+sudo ./install.sh
 ```
 
-Para atualizar no futuro, basta rodar `git pull` dentro da pasta clonada e repetir o `cp`.
+### Opção 2 — Baixar ZIP/tar e rodar o instalador
 
-### Opção 2 — Instalação manual (sem git)
-
-Baixe o arquivo `proteus` diretamente do GitHub e instale:
+Baixe o repositório como ZIP, extraia em qualquer pasta e execute:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DiogoAlbq/Proteus/main/proteus -o /tmp/proteus
-sudo cp /tmp/proteus /usr/local/bin/proteus
-sudo chmod 755 /usr/local/bin/proteus
+sudo ./install.sh
 ```
 
-Ou, sem `curl`, usando `wget`:
-
-```bash
-wget -qO /tmp/proteus https://raw.githubusercontent.com/DiogoAlbq/Proteus/main/proteus
-sudo cp /tmp/proteus /usr/local/bin/proteus
-sudo chmod 755 /usr/local/bin/proteus
-```
+> O instalador copia `proteus` para `/usr/local/bin/proteus` **sobrescrevendo** qualquer versão anterior, sem se conectar à internet.
 
 ### Verificação
 
@@ -181,6 +171,36 @@ Após a instalação, verifique se o comando está disponível:
 
 ```bash
 proteus --help
+```
+
+## Atualização
+
+### Linux
+
+A atualização é igual à instalação: rode `sudo ./install.sh` novamente e ele sobrescreve a versão antiga:
+
+```bash
+# Se usou git clone:
+cd Proteus
+git pull
+sudo ./install.sh
+
+# Se baixou ZIP novo:
+# Extraia e rode: sudo ./install.sh
+```
+
+### Windows
+
+A atualização é igual à instalação: rode `.\install.ps1` novamente e ele sobrescreve a versão antiga:
+
+```powershell
+# Se usou git clone:
+cd Proteus
+git pull
+.\install.ps1
+
+# Se baixou ZIP novo:
+# Extraia e rode: .\install.ps1
 ```
 
 ## Como funciona
