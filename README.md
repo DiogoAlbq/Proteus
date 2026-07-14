@@ -15,6 +15,15 @@ Ele reduz a contenção SMT ao garantir que o processo execute em núcleos físi
 - `lscpu` (util-linux)
 - `gamemoderun` (opcional)
 
+## Porta Windows
+
+O arquivo `proteus.ps1` é uma porta Windows em PowerShell que tenta definir afinidade de processador usando a máscara de afinidade lógica. Ele suporta `--cores` e `--percent` de forma similar ao script Linux.
+
+Requisitos para o Windows:
+
+- PowerShell 5.1 ou superior
+- Acesso a WMI/CIM para `Win32_Processor`
+
 ## Uso
 
 ```bash
