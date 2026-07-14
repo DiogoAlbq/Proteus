@@ -42,6 +42,7 @@ Opções:
 - `--mem N` — limita o processo a `N` MB de RAM (ex: `--mem 4096` = 4 GB)
 - `--ram N` — limita o processo a `N%` da RAM total (ex: `--ram 50` = metade)
 - `-h`, `--help` — exibe a ajuda
+- `-v`, `--version` — exibe a versão
 - `--` — separa opções do comando (útil para comandos que começam com `-`)
 
 ### Exemplos (Windows)
@@ -131,6 +132,7 @@ Opções de memória:
 Outras:
 
 - `-h`, `--help` — exibe a ajuda
+- `-v`, `--version` — exibe a versão
 - `--` — separa opções do comando
 
 ## Exemplos

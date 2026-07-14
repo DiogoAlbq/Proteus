@@ -4,11 +4,12 @@
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 
+$VERSION = "1.1.0"
 $DEFAULT_PERCENT = 75
 
 function Show-Usage {
     Write-Output @"
-Proteus - CPU physical core allocation wrapper (Windows)
+Proteus v$VERSION - CPU physical core allocation wrapper (Windows)
 
 Uso: proteus.ps1 [OPCOES] <comando> [args...]
 
@@ -80,6 +81,8 @@ for ($i = 0; $i -lt $args.Length; $i++) {
         }
         "-h" { Show-Usage }
         "--help" { Show-Usage }
+        "-v" { Write-Output "proteus $VERSION"; exit 0 }
+        "--version" { Write-Output "proteus $VERSION"; exit 0 }
         "--" { $Parsing = $false }
         default { $Parsing = $false; $Command += $args[$i] }
     }

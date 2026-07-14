@@ -1,14 +1,15 @@
 #!/bin/bash
 # Proteus — CPU physical core allocation wrapper
-# Muda de forma à vontade: dedica núcleos físicos completos (ambas threads SMT) a um processo.
+# Muda de forma à vontade: dedica ncleos fisicos completos (ambas threads SMT) a um processo.
 
 set -uo pipefail
 
+VERSION="1.1.0"
 DEFAULT_PERCENT=75
 
 usage() {
     cat <<EOF
-Proteus — CPU physical core allocation wrapper
+Proteus v${VERSION} — CPU physical core allocation wrapper
 
 Uso: proteus [OPÇÕES] <comando> [args...]
 
@@ -73,6 +74,8 @@ while [[ $# -gt 0 ]]; do
             RAM_ARG="${2}"; shift 2 ;;
         -h|--help)
             usage ;;
+        -v|--version)
+            echo "proteus ${VERSION}"; exit 0 ;;
         --)
             shift; break ;;
         *)
