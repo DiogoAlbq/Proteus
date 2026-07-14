@@ -18,7 +18,7 @@ Ele reduz a contenção SMT ao garantir que o processo execute em núcleos físi
 
 ---
 
-# Porta Windows (`proteus.ps1`)
+# Porte para Windows (`proteus.ps1`)
 
 O arquivo `proteus.ps1` é uma porta para Windows em PowerShell que define afinidade de processador usando a propriedade `ProcessorAffinity` do processo. Ele suporta `--cores`, `--percent`, `--mem` e `--ram` de forma equivalente ao script Linux, usando `Win32_Processor` (WMI/CIM) para detectar a topologia de CPU e `Win32_OperatingSystem` para a RAM total. O limite de memória é aplicado via **Job Objects** (`JOBOBJECT_EXTENDED_LIMIT_INFORMATION`).
 
