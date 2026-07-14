@@ -63,7 +63,7 @@ Opções:
 ```powershell
 git clone https://github.com/DiogoAlbq/Proteus.git
 cd Proteus
-.\install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 ### Opção 2 — Baixar ZIP e rodar o instalador
@@ -71,15 +71,15 @@ cd Proteus
 Baixe o ZIP do repositório, extraia em qualquer pasta e execute:
 
 ```powershell
-.\install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-> O instalador copia `proteus.ps1` para `%USERPROFILE%\proteus.ps1` **sobrescrevendo** qualquer versão anterior, sem conectarse à internet.
+> O instalador copia `proteus.ps1` para `%USERPROFILE%\proteus.ps1` **sobrescrevendo** qualquer versão anterior, sem se conectar à internet.
 
 ### Verificação (Windows)
 
 ```powershell
-.\proteus.ps1 --help
+powershell -ExecutionPolicy Bypass -File .\proteus.ps1 --help
 ```
 
 ## Como funciona (Windows)
@@ -152,15 +152,17 @@ proteus --cores 4 --mem 6144 ./jogo
 ```bash
 git clone https://github.com/DiogoAlbq/Proteus.git
 cd Proteus
-sudo ./install.sh
+sudo bash install.sh
 ```
+
+> Se você já tem uma pasta `Proteus` de antes, rode `git pull` na pasta existente em vez de clonar de novo (ou delete a antiga antes).
 
 ### Opção 2 — Baixar ZIP/tar e rodar o instalador
 
 Baixe o repositório como ZIP, extraia em qualquer pasta e execute:
 
 ```bash
-sudo ./install.sh
+sudo bash install.sh
 ```
 
 > O instalador copia `proteus` para `/usr/local/bin/proteus` **sobrescrevendo** qualquer versão anterior, sem se conectar à internet.
@@ -177,30 +179,30 @@ proteus --help
 
 ### Linux
 
-A atualização é igual à instalação: rode `sudo ./install.sh` novamente e ele sobrescreve a versão antiga:
+A atualização é igual à instalação: rode o instalador novamente e ele sobrescreve a versão antiga:
 
 ```bash
 # Se usou git clone:
 cd Proteus
 git pull
-sudo ./install.sh
+sudo bash install.sh
 
 # Se baixou ZIP novo:
-# Extraia e rode: sudo ./install.sh
+# Extraia e rode: sudo bash install.sh
 ```
 
 ### Windows
 
-A atualização é igual à instalação: rode `.\install.ps1` novamente e ele sobrescreve a versão antiga:
+A atualização é igual à instalação: rode o instalador novamente e ele sobrescreve a versão antiga:
 
 ```powershell
 # Se usou git clone:
 cd Proteus
 git pull
-.\install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 # Se baixou ZIP novo:
-# Extraia e rode: .\install.ps1
+# Extraia e rode: powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 ## Como funciona
