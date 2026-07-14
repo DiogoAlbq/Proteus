@@ -1,157 +1,188 @@
-<#
-.SYNOPSIS
-Proteus Windows port for setting processor affinity by physical core groups.
+# Proteus — CPU physical core allocation wrapper (Windows PowerShell port)
+# Dedica ncleos fisicos completos (ambas threads SMT) a um processo no Windows.
 
-.DESCRIPTION
-This script attempts to allocate full physical cores to a launched process by
-selecting logical processor groups based on CPU core counts and SMT ratio.
-#>
+#Requires -Version 5.1
+$ErrorActionPreference = "Stop"
 
 $DEFAULT_PERCENT = 75
 
 function Show-Usage {
     Write-Output @"
-Proteus Windows port
+Proteus - CPU physical core allocation wrapper (Windows)
 
-Uso: .\proteus.ps1 [--cores N | --percent N] -- <comando> [args...]
+Uso: proteus.ps1 [OPCOES] <comando> [args...]
 
-Opções:
-  --cores N       Dedica N núcleos físicos completos ao processo
-  --percent N     Dedica N% dos núcleos físicos totais (padrão: $DEFAULT_PERCENT%)
+Opcoes:
+  --cores N       Dedica N nucleos fisicos completos ao processo
+  --percent N     Dedica N% dos nucleos fisicos totais (padrao: $DEFAULT_PERCENT%)
   -h, --help      Mostra esta ajuda
+
+Exemplos (Ryzen 7 5700X = 8 cores fisicos / 16 threads):
+  .\proteus.ps1 .\jogo.exe                  # 75% = 6 cores (0-5 + SMT)
+  .\proteus.ps1 --percent 100 .\jogo.exe    # 100% = 8 cores (todos)
+  .\proteus.ps1 --percent 50 .\jogo.exe     # 50%  = 4 cores (0-3 + SMT)
+  .\proteus.ps1 --cores 4 .\jogo.exe        # Exatos 4 cores (0-3 + SMT)
+
+Integracao:
+  Steam:        powershell -File proteus.ps1 %command%
+  Heroic:       powershell -File proteus.ps1 (Wrapper Command)
+  Bottles:      powershell -File proteus.ps1 %command%
 "@
     exit 0
 }
 
-function Get-ProcessorInfo {
-    if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
-        return Get-CimInstance -ClassName Win32_Processor
-    }
-    if (Get-Command Get-WmiObject -ErrorAction SilentlyContinue) {
-        return Get-WmiObject -Class Win32_Processor
-    }
+# ---------------------------------------------------------------------------
+# Parser de argumentos
+# ---------------------------------------------------------------------------
+$CoresArg   = $null
+$PercentArg = $null
+$Command    = @()
+$Parsing    = $true
+$SkipNext   = $false
 
-    Write-Error "[proteus] Erro: nenhum provedor WMI disponível para obter informações de CPU"
-    exit 1
-}
+for ($i = 0; $i -lt $args.Length; $i++) {
+    if (-not $Parsing) { $Command += $args[$i]; continue }
 
-$coresArg = $null
-$percentArg = $null
-$positionals = @()
-
-while ($args.Count -gt 0) {
-    switch ($args[0]) {
-        '--cores' {
-            if ($args.Count -lt 2 -or $args[1].StartsWith('--')) {
-                Write-Error "[proteus] Erro: --cores requer um valor"
-                exit 1
+    switch ($args[$i]) {
+        "--cores" {
+            if (($i + 1) -ge $args.Length -or $args[$i + 1] -match "^-{1,2}") {
+                Write-Error "[proteus] Erro: --cores requer um valor" -ErrorAction Stop
             }
-            $coresArg = $args[1]
-            $args = $args[2..($args.Count - 1)]
-            continue
+            $CoresArg = $args[$i + 1]; $i++
         }
-        '--percent' {
-            if ($args.Count -lt 2 -or $args[1].StartsWith('--')) {
-                Write-Error "[proteus] Erro: --percent requer um valor"
-                exit 1
+        "--percent" {
+            if (($i + 1) -ge $args.Length -or $args[$i + 1] -match "^-{1,2}") {
+                Write-Error "[proteus] Erro: --percent requer um valor" -ErrorAction Stop
             }
-            $percentArg = $args[1]
-            $args = $args[2..($args.Count - 1)]
-            continue
+            $PercentArg = $args[$i + 1]; $i++
         }
-        '-h' | '--help' {
-            Show-Usage
-        }
-        '--' {
-            $args = $args[1..($args.Count - 1)]
-            break
-        }
-        default {
-            break
-        }
+        "-h" { Show-Usage }
+        "--help" { Show-Usage }
+        "--" { $Parsing = $false }
+        default { $Parsing = $false; $Command += $args[$i] }
     }
 }
 
-if ($args.Count -eq 0) {
-    Show-Usage
-}
+if ($Command.Count -eq 0) { Show-Usage }
 
-$command = $args[0]
-$commandArgs = @()
-if ($args.Count -gt 1) {
-    $commandArgs = $args[1..($args.Count - 1)]
-}
-
-$processors = Get-ProcessorInfo
-$physicalCores = ($processors | Measure-Object -Property NumberOfCores -Sum).Sum
-$logicalProcessors = ($processors | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
-
-if ($physicalCores -le 0) {
-    Write-Error "[proteus] Erro: não foi possível detectar núcleos físicos"
-    exit 1
-}
-
-if ($logicalProcessors -lt $physicalCores) {
-    $logicalProcessors = $physicalCores
-}
-
-if ($coresArg) {
-    if ($coresArg -notmatch '^[0-9]+$' -or [int]$coresArg -lt 1) {
-        Write-Error "[proteus] --cores deve ser inteiro positivo"
-        exit 1
+# ---------------------------------------------------------------------------
+# 2. Deteccao de CPU via WMI/CIM
+# ---------------------------------------------------------------------------
+$processors = $null
+try {
+    $processors = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop
+} catch {
+    try {
+        $processors = Get-WmiObject -Class Win32_Processor -ErrorAction Stop
+    } catch {
+        Write-Warning "[proteus] Nao foi possivel ler a topologia de CPU via WMI/CIM"
     }
-    $targetCores = [int]$coresArg
-} elseif ($percentArg) {
-    if ($percentArg -notmatch '^[0-9]+$') {
-        Write-Error "[proteus] --percent deve ser inteiro 1-100"
-        exit 1
-    }
-    $percent = [int]$percentArg
-    if ($percent -lt 1 -or $percent -gt 100) {
-        Write-Error "[proteus] --percent deve ser 1-100"
-        exit 1
-    }
-    $targetCores = [math]::Ceiling($physicalCores * $percent / 100.0)
+}
+
+if (-not $processors) {
+    Write-Output "[proteus] Executando sem afinidade (CPU nao detectada)"
+    $p = Start-Process -FilePath $Command[0] -ArgumentList ($Command[1..($Command.Length - 1)]) -PassThru -NoNewWindow
+    $p.WaitForExit()
+    exit $p.ExitCode
+}
+
+# ---------------------------------------------------------------------------
+# 3. Calculo da topologia
+# ---------------------------------------------------------------------------
+$physicalCores = 0
+$logicalThreads = 0
+foreach ($cpu in $processors) {
+    $physicalCores += [int]$cpu.NumberOfCores
+    $logicalThreads += [int]$cpu.NumberOfLogicalProcessors
+}
+
+if ($logicalThreads -le 0 -or $physicalCores -le 0) {
+    Write-Warning "[proteus] Topologia invalida; executando sem afinidade"
+    $p = Start-Process -FilePath $Command[0] -ArgumentList ($Command[1..($Command.Length - 1)]) -PassThru -NoNewWindow
+    $p.WaitForExit()
+    exit $p.ExitCode
+}
+
+# Threads por core (SMT)
+$threadsPerCore = 1
+$smtWarn = $false
+if (($logicalThreads % $physicalCores) -eq 0) {
+    $threadsPerCore = [int]($logicalThreads / $physicalCores)
 } else {
-    $targetCores = [math]::Ceiling($physicalCores * $DEFAULT_PERCENT / 100.0)
+    $threadsPerCore = 1
+    $smtWarn = $true
 }
 
+# ---------------------------------------------------------------------------
+# 4. Determinar numero de cores a alocar
+# ---------------------------------------------------------------------------
+$targetCores = 0
+if ($CoresArg) {
+    if ($CoresArg -notmatch "^\d+$" -or [int]$CoresArg -lt 1) {
+        Write-Error "[proteus] --cores deve ser inteiro positivo" -ErrorAction Stop
+    }
+    $targetCores = [int]$CoresArg
+} elseif ($PercentArg) {
+    if ($PercentArg -notmatch "^\d+$" -or [int]$PercentArg -lt 1 -or [int]$PercentArg -gt 100) {
+        Write-Error "[proteus] --percent deve ser inteiro 1-100" -ErrorAction Stop
+    }
+    $targetCores = [math]::Ceiling(($physicalCores * [int]$PercentArg) / 100.0)
+} else {
+    $targetCores = [math]::Ceiling(($physicalCores * $DEFAULT_PERCENT) / 100.0)
+}
+
+# Clamp
 if ($targetCores -lt 1) { $targetCores = 1 }
 if ($targetCores -gt $physicalCores) { $targetCores = $physicalCores }
 
-$threadsPerCore = 1
-if ($logicalProcessors % $physicalCores -eq 0) {
-    $threadsPerCore = [int]($logicalProcessors / $physicalCores)
-} else {
-    Write-Host "[proteus] aviso: topologia SMT irregular detectada, usando 1 thread por core" -ForegroundColor Yellow
-}
-
-$selectedThreads = @()
-for ($coreIndex = 0; $coreIndex -lt $targetCores; $coreIndex++) {
-    for ($threadIndex = 0; $threadIndex -lt $threadsPerCore; $threadIndex++) {
-        $selectedThreads += ($coreIndex * $threadsPerCore + $threadIndex)
+# ---------------------------------------------------------------------------
+# 5. Montar lista de threads logicas selecionadas (primeiros N cores fisicos)
+# ---------------------------------------------------------------------------
+$selectedThreads = [System.Collections.ArrayList]::new()
+for ($core = 0; $core -lt $targetCores; $core++) {
+    for ($t = 0; $t -lt $threadsPerCore; $t++) {
+        $logical = ($core * $threadsPerCore) + $t
+        if ($logical -lt $logicalThreads) {
+            [void]$selectedThreads.Add($logical)
+        }
     }
 }
 
-$maxThread = ($selectedThreads | Measure-Object -Maximum).Maximum
-if ($maxThread -ge 64) {
-    Write-Error "[proteus] Erro: mais de 64 threads lógicas não são suportadas pelo affinity mask atual"
-    exit 1
+# ---------------------------------------------------------------------------
+# 6. Gerar mascara de afinidade (ProcessorAffinity)
+# Limite: 64 threads logicas (uint64)
+# ---------------------------------------------------------------------------
+if ($selectedThreads.Count -gt 64) {
+    Write-Warning "[proteus] Mais de 64 threads detectadas; limitando a 64"
+    $selectedThreads = $selectedThreads[0..63]
 }
 
 $affinityMask = [uint64]0
-foreach ($thread in $selectedThreads) {
-    $affinityMask = $affinityMask -bor ([uint64]1 -shl $thread)
+foreach ($t in $selectedThreads) {
+    $affinityMask = $affinityMask -bor ([uint64]1 -shl $t)
 }
 
-Write-Host "[proteus] físico: ${physicalCores}C/${threadsPerCore}T | alocado: ${targetCores} cores (${selectedThreads.Count} threads: $($selectedThreads -join ', ')) | affinity: 0x$([Convert]::ToString($affinityMask,16))" -ForegroundColor Yellow
+if ($smtWarn) {
+    Write-Warning "[proteus] Threads logicas nao sao multiplo dos fisicos; assumindo 1 thread/core"
+}
 
+$threadList = ($selectedThreads -join ",")
+$tpc = if ($smtWarn) { "1T (fallback)" } else { "${threadsPerCore}T" }
+Write-Host "[proteus] fisico: ${physicalCores}C/$tpc | alocado: $targetCores cores ($($selectedThreads.Count) threads: $threadList)" -ForegroundColor Cyan
+
+# ---------------------------------------------------------------------------
+# 7. Executar o comando com afinidade aplicada
+# ---------------------------------------------------------------------------
 try {
-    $process = Start-Process -FilePath $command -ArgumentList $commandArgs -PassThru
-    $process.ProcessorAffinity = [intptr]$affinityMask
-    $process.WaitForExit()
-    exit $process.ExitCode
+    $p = Start-Process -FilePath $Command[0] -ArgumentList ($Command[1..($Command.Length - 1)]) -PassThru -NoNewWindow
+    try {
+        $p.ProcessorAffinity = [IntPtr]$affinityMask
+    } catch {
+        Write-Warning "[proteus] Falha ao aplicar ProcessorAffinity: $($_.Exception.Message)"
+    }
+    $p.WaitForExit()
+    exit $p.ExitCode
 } catch {
-    Write-Error "[proteus] Erro ao iniciar o comando: $_"
+    Write-Error "[proteus] Erro ao iniciar processo: $($_.Exception.Message)"
     exit 1
 }

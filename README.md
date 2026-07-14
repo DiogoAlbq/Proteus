@@ -15,14 +15,89 @@ Ele reduz a contenção SMT ao garantir que o processo execute em núcleos físi
 - `lscpu` (util-linux)
 - `gamemoderun` (opcional)
 
-## Porta Windows
+---
 
-O arquivo `proteus.ps1` é uma porta Windows em PowerShell que tenta definir afinidade de processador usando a máscara de afinidade lógica. Ele suporta `--cores` e `--percent` de forma similar ao script Linux.
+# Porta Windows (`proteus.ps1`)
 
-Requisitos para o Windows:
+O arquivo `proteus.ps1` é uma porta para Windows em PowerShell que define afinidade de processador usando a propriedade `ProcessorAffinity` do processo. Ele suporta `--cores` e `--percent` de forma equivalente ao script Linux, usando `Win32_Processor` (WMI/CIM) para detectar a topologia de CPU.
 
+## Requisitos (Windows)
+
+- Windows 10 / 11 ou Windows Server 2016+
 - PowerShell 5.1 ou superior
-- Acesso a WMI/CIM para `Win32_Processor`
+- Acesso a WMI/CIM para a classe `Win32_Processor`
+- Permissão para alterar afinidade do processo (conta padrão do usuário normalmente basta)
+
+## Uso (Windows)
+
+```powershell
+.\proteus.ps1 [OPÇÕES] <comando> [args...]
+```
+
+Opções:
+
+- `--cores N` — aloca exatamente `N` núcleos físicos completos
+- `--percent N` — aloca `N%` dos núcleos físicos totais (padrão: 75%)
+- `-h`, `--help` — exibe a ajuda
+- `--` — separa opções do comando (útil para comandos que começam com `-`)
+
+### Exemplos (Windows)
+
+```powershell
+.\proteus.ps1 .\jogo.exe
+.\proteus.ps1 --percent 100 .\jogo.exe
+.\proteus.ps1 --percent 50 .\jogo.exe
+.\proteus.ps1 --cores 4 .\jogo.exe --fullscreen
+```
+
+## Instalação (Windows)
+
+### Opção 1 — Via git clone
+
+```powershell
+git clone https://github.com/DiogoAlbq/Proteus.git
+cd Proteus
+# Opcional: copiar para uma pasta no PATH
+Copy-Item proteus.ps1 "$env:USERPROFILE\proteus.ps1"
+```
+
+### Opção 2 — Download manual
+
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/DiogoAlbq/Proteus/main/proteus.ps1" -OutFile "proteus.ps1"
+```
+
+### Verificação (Windows)
+
+```powershell
+.\proteus.ps1 --help
+```
+
+## Como funciona (Windows)
+
+1. Detecta a topologia de CPU via `Get-CimInstance Win32_Processor` (fallback para `Get-WmiObject`)
+2. Soma `NumberOfCores` (físicos) e `NumberOfLogicalProcessors` (lógicos) entre todos os sockets
+3. Calcula threads por core (SMT); se lógico não é múltiplo de físico, usa fallback de 1T/core com aviso
+4. Calcula quantos cores físicos alocar (`--cores`, `--percent`, ou padrão 75%)
+5. Seleciona os primeiros `N` cores físicos e todas as suas threads SMT
+6. Constrói uma máscara de afinidade `uint64` com bits correspondentes às threads selecionadas (limite: 64 threads)
+7. Inicia o comando com `Start-Process -PassThru`, aplica `$process.ProcessorAffinity`, espera o término e retorna o código de saída
+
+## Integração com launchers (Windows)
+
+| Launcher | Configuração |
+|---|---|
+| Steam | `powershell -File proteus.ps1 %command%` |
+| Heroic | Wrapper Command: `powershell -File proteus.ps1` |
+| Bottles | `powershell -File proteus.ps1 %command%` |
+| Lutris (Windows) | Command Prefix: `powershell -File proteus.ps1` |
+
+## Limitações da porta Windows
+
+- A máscara de afinidade é `uint64`, limitando o suporte a **64 threads lógicas**
+- O Windows não expõe a topologia de forma tão granular quanto `lscpu` no Linux; a assumição linear (core `i` → threads `i*threadsPerCore` a `(i+1)*threadsPerCore - 1`) pode não refletir a ordem real do kernel em sistemas NUMA complexos
+- Se `NumberOfLogicalProcessors` não for múltiplo de `NumberOfCores`, o script assume 1 thread/core e exibe um aviso
+- Sem equivalente ao `gamemoderun` no Windows; a afinidade é aplicada via `ProcessorAffinity`
 
 ## Uso
 
