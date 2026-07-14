@@ -206,8 +206,6 @@ Isso melhora previsibilidade, IPC e latência em workloads single-thread sensív
 
 ## Licença
 
-MIT
+Este projeto está licenciado sob a licença MIT. Veja o arquivo [LICENSE](LICENSE) para detalhes.
 
-## Autor
-
-Orion
+---
