@@ -1,0 +1,157 @@
+#!/bin/bash
+# Proteus — CPU physical core allocation wrapper
+# Muda de forma à vontade: dedica núcleos físicos completos (ambas threads SMT) a um processo.
+
+set -uo pipefail
+
+DEFAULT_PERCENT=75
+
+usage() {
+    cat <<EOF
+Proteus — CPU physical core allocation wrapper
+
+Uso: proteus [OPÇÕES] <comando> [args...]
+
+Opções:
+  --cores N       Dedica N núcleos físicos completos ao processo
+  --percent N     Dedica N%% dos núcleos físicos totais (padrão: ${DEFAULT_PERCENT}%%)
+  -h, --help      Mostra esta ajuda
+
+Exemplos (Ryzen 7 5700X = 8 cores físicos / 16 threads):
+  proteus ./jogo                    # 75%% = 6 cores (0-5 + SMT)
+  proteus --percent 100 ./jogo      # 100%% = 8 cores (todos)
+  proteus --percent 50 ./jogo       # 50%%  = 4 cores (0-3 + SMT)
+  proteus --cores 4 ./jogo          # Exatos 4 cores (0-3 + SMT)
+
+Integração:
+  Steam:        proteus %command%
+  Lutris:       proteus (Command Prefix)
+  Heroic:       proteus (Wrapper Command)
+  Bottles:      proteus %command%
+EOF
+    exit 0
+}
+
+# Parse args
+CORES_ARG=""
+PERCENT_ARG=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --cores)
+            if [[ $# -lt 2 || "$2" == --* ]]; then
+                echo "[proteus] Erro: --cores requer um valor" >&2
+                exit 1
+            fi
+            CORES_ARG="${2}"; shift 2 ;;
+        --percent)
+            if [[ $# -lt 2 || "$2" == --* ]]; then
+                echo "[proteus] Erro: --percent requer um valor" >&2
+                exit 1
+            fi
+            PERCENT_ARG="${2}"; shift 2 ;;
+        -h|--help)
+            usage ;;
+        --)
+            shift; break ;;
+        *)
+            break ;;
+    esac
+ done
+
+[[ $# -eq 0 ]] && { usage; }
+
+if ! command -v lscpu >/dev/null 2>&1; then
+    echo "[proteus] Erro: lscpu não encontrado" >&2
+    exec "$@"
+fi
+
+# ---------------------------------------------------------------------------
+# 1. Detecta topologia real via lscpu -p (ordem BIOS/board, não assume linear)
+# ---------------------------------------------------------------------------
+mapfile -t TOPOLOGY < <(lscpu -p=CPU,CORE,SOCKET 2>/dev/null | grep -v '^#' | grep -E '^[0-9]')
+if [[ ${#TOPOLOGY[@]} -eq 0 ]]; then
+    echo "[proteus] Erro: lscpu não retornou topologia válida" >&2
+    exec "$@"
+fi
+
+# Agrupa threads por core físico
+declare -A CORE_THREADS=()
+TOTAL_THREADS=0
+for line in "${TOPOLOGY[@]}"; do
+    IFS=',' read -r thread core socket <<< "$line"
+    [[ -z "$thread" || -z "$core" ]] && continue
+    CORE_THREADS["$core"]+=" $thread"
+    (( TOTAL_THREADS++ ))
+ done
+PHYSICAL_CORES=${#CORE_THREADS[@]}
+
+# Ordena cores fisicamente (0,1,2...) — ordem do lscpu já reflete topologia real
+mapfile -t SORTED_CORES < <(printf '%s\n' "${!CORE_THREADS[@]}" | sort -n)
+
+THREADS_MIN=0
+THREADS_MAX=0
+for core in "${SORTED_CORES[@]}"; do
+    count=$(wc -w <<<"${CORE_THREADS[$core]}")
+    [[ $THREADS_MIN -eq 0 || $count -lt $THREADS_MIN ]] && THREADS_MIN=$count
+    (( count > THREADS_MAX )) && THREADS_MAX=$count
+ done
+if [[ $THREADS_MIN -eq $THREADS_MAX ]]; then
+    THREADS_PER_CORE=${THREADS_MIN}
+else
+    THREADS_PER_CORE="${THREADS_MIN}-${THREADS_MAX}"
+fi
+# ---------------------------------------------------------------------------
+TARGET_CORES=0
+if [[ -n "$CORES_ARG" ]]; then
+    [[ "$CORES_ARG" =~ ^[0-9]+$ ]] || { echo "[proteus] --cores deve ser inteiro positivo" >&2; exit 1; }
+    TARGET_CORES=$CORES_ARG
+elif [[ -n "$PERCENT_ARG" ]]; then
+    [[ "$PERCENT_ARG" =~ ^[0-9]+$ ]] || { echo "[proteus] --percent deve ser inteiro 1-100" >&2; exit 1; }
+    (( PERCENT_ARG < 1 || PERCENT_ARG > 100 )) && { echo "[proteus] --percent deve ser 1-100" >&2; exit 1; }
+    TARGET_CORES=$(( (PHYSICAL_CORES * PERCENT_ARG + 99) / 100 ))  # ceil
+else
+    TARGET_CORES=$(( (PHYSICAL_CORES * DEFAULT_PERCENT + 99) / 100 ))
+fi
+
+# Clamp
+(( TARGET_CORES < 1 )) && TARGET_CORES=1
+(( TARGET_CORES > PHYSICAL_CORES )) && TARGET_CORES=$PHYSICAL_CORES
+
+# ---------------------------------------------------------------------------
+# 3. Seleciona os PRIMEIROS N cores físicos para o jogo
+# ---------------------------------------------------------------------------
+SELECTED_THREADS=()
+for (( i=0; i<TARGET_CORES; i++ )); do
+    core="${SORTED_CORES[i]}"
+    for t in ${CORE_THREADS[$core]}; do
+        SELECTED_THREADS+=("$t")
+    done
+done
+
+TASKSET_CPULIST=$(IFS=,; echo "${SELECTED_THREADS[*]}")
+
+# ---------------------------------------------------------------------------
+# 4. GameMode (opcional, complementar)
+# ---------------------------------------------------------------------------
+GAMEMODE_BIN=""
+command -v gamemoderun >/dev/null 2>&1 && GAMEMODE_BIN="gamemoderun"
+
+# ---------------------------------------------------------------------------
+# 5. Log e exec
+# ---------------------------------------------------------------------------
+if ! command -v taskset >/dev/null 2>&1; then
+    echo "[proteus] aviso: taskset não encontrado, executando sem taskset" >&2
+    if [[ -n "$GAMEMODE_BIN" ]]; then
+        exec "$GAMEMODE_BIN" "$@"
+    else
+        exec "$@"
+    fi
+fi
+
+echo "[proteus] físico: ${PHYSICAL_CORES}C/${THREADS_PER_CORE}T | alocado: ${TARGET_CORES} cores (${#SELECTED_THREADS[@]} threads: ${TASKSET_CPULIST}) | game: ${GAMEMODE_BIN:-none}" >&2
+
+if [[ -n "$GAMEMODE_BIN" ]]; then
+    exec taskset -c "$TASKSET_CPULIST" "$GAMEMODE_BIN" "$@"
+else
+    exec taskset -c "$TASKSET_CPULIST" "$@"
+fi
