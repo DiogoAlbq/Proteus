@@ -14,19 +14,20 @@ Ele reduz a contenção SMT ao garantir que o processo execute em núcleos físi
 - `taskset` (coreutils)
 - `lscpu` (util-linux)
 - `gamemoderun` (opcional)
+- `systemd-run` (opcional, necessário para `--mem`/`--ram`)
 
 ---
 
 # Porta Windows (`proteus.ps1`)
 
-O arquivo `proteus.ps1` é uma porta para Windows em PowerShell que define afinidade de processador usando a propriedade `ProcessorAffinity` do processo. Ele suporta `--cores` e `--percent` de forma equivalente ao script Linux, usando `Win32_Processor` (WMI/CIM) para detectar a topologia de CPU.
+O arquivo `proteus.ps1` é uma porta para Windows em PowerShell que define afinidade de processador usando a propriedade `ProcessorAffinity` do processo. Ele suporta `--cores`, `--percent`, `--mem` e `--ram` de forma equivalente ao script Linux, usando `Win32_Processor` (WMI/CIM) para detectar a topologia de CPU e `Win32_OperatingSystem` para a RAM total. O limite de memória é aplicado via **Job Objects** (`JOBOBJECT_EXTENDED_LIMIT_INFORMATION`).
 
 ## Requisitos (Windows)
 
 - Windows 10 / 11 ou Windows Server 2016+
 - PowerShell 5.1 ou superior
-- Acesso a WMI/CIM para a classe `Win32_Processor`
-- Permissão para alterar afinidade do processo (conta padrão do usuário normalmente basta)
+- Acesso a WMI/CIM para as classes `Win32_Processor` e `Win32_OperatingSystem`
+- Permissão para alterar afinidade do processo e criar Job Objects (conta padrão do usuário normalmente basta)
 
 ## Uso (Windows)
 
@@ -38,6 +39,8 @@ Opções:
 
 - `--cores N` — aloca exatamente `N` núcleos físicos completos
 - `--percent N` — aloca `N%` dos núcleos físicos totais (padrão: 75%)
+- `--mem N` — limita o processo a `N` MB de RAM (ex: `--mem 4096` = 4 GB)
+- `--ram N` — limita o processo a `N%` da RAM total (ex: `--ram 50` = metade)
 - `-h`, `--help` — exibe a ajuda
 - `--` — separa opções do comando (útil para comandos que começam com `-`)
 
@@ -48,6 +51,9 @@ Opções:
 .\proteus.ps1 --percent 100 .\jogo.exe
 .\proteus.ps1 --percent 50 .\jogo.exe
 .\proteus.ps1 --cores 4 .\jogo.exe --fullscreen
+.\proteus.ps1 --mem 4096 .\jogo.exe
+.\proteus.ps1 --ram 50 .\jogo.exe
+.\proteus.ps1 --cores 4 --mem 6144 .\jogo.exe
 ```
 
 ## Instalação (Windows)
@@ -81,7 +87,9 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/DiogoAlbq/Proteus/main
 4. Calcula quantos cores físicos alocar (`--cores`, `--percent`, ou padrão 75%)
 5. Seleciona os primeiros `N` cores físicos e todas as suas threads SMT
 6. Constrói uma máscara de afinidade `uint64` com bits correspondentes às threads selecionadas (limite: 64 threads)
-7. Inicia o comando com `Start-Process -PassThru`, aplica `$process.ProcessorAffinity`, espera o término e retorna o código de saída
+7. Se `--mem`/`--ram` foi passado, lê a RAM total via `Win32_OperatingSystem` e calcula o limite em bytes
+8. Inicia o comando com `Start-Process -PassThru`, aplica `$process.ProcessorAffinity`, cria um **Job Object** com `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` + `JOB_OBJECT_LIMIT_PROCESS_MEMORY` e assigna o processo ao Job
+9. Espera o término e retorna o código de saída
 
 ## Integração com launchers (Windows)
 
@@ -98,18 +106,29 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/DiogoAlbq/Proteus/main
 - O Windows não expõe a topologia de forma tão granular quanto `lscpu` no Linux; a assumição linear (core `i` → threads `i*threadsPerCore` a `(i+1)*threadsPerCore - 1`) pode não refletir a ordem real do kernel em sistemas NUMA complexos
 - Se `NumberOfLogicalProcessors` não for múltiplo de `NumberOfCores`, o script assume 1 thread/core e exibe um aviso
 - Sem equivalente ao `gamemoderun` no Windows; a afinidade é aplicada via `ProcessorAffinity`
+- O limite de RAM via Job Object usa `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: se o PowerShell for fechado, o processo limitado também é terminado
+- Processos já associados a outro Job Object podem falhar ao ser assignados (raro em Windows 10+ com JobObjects aninhados habilitados)
 
 ## Uso
 
 ```bash
-proteus [--cores N | --percent N] <comando> [args...]
+proteus [OPÇÕES] <comando> [args...]
 ```
 
-Opções:
+Opções de CPU:
 
 - `--cores N` — aloca exatamente `N` núcleos físicos completos
-- `--percent N` — aloca `N%` dos núcleos físicos totais
+- `--percent N` — aloca `N%` dos núcleos físicos totais (padrão: 75%)
+
+Opções de memória:
+
+- `--mem N` — limita o processo a `N` MB de RAM (ex: `--mem 4096` = 4 GB)
+- `--ram N` — limita o processo a `N%` da RAM total (ex: `--ram 50` = metade)
+
+Outras:
+
 - `-h`, `--help` — exibe a ajuda
+- `--` — separa opções do comando
 
 ## Exemplos
 
@@ -118,6 +137,9 @@ proteus ./jogo
 proteus --percent 100 ./jogo
 proteus --percent 50 ./jogo
 proteus --cores 4 ./jogo
+proteus --mem 4096 ./jogo
+proteus --ram 50 ./jogo
+proteus --cores 4 --mem 6144 ./jogo
 ```
 
 ## Instalação
@@ -168,7 +190,8 @@ proteus --help
 3. Calcula quantos cores físicos alocar
 4. Seleciona os primeiros `N` cores físicos na ordem do kernel
 5. Monta a lista de threads SMT para `taskset -c`
-6. Executa o comando com `taskset` e `gamemoderun` (se disponível)
+6. Se `--mem`/`--ram` foi passado, lê a RAM total em `/proc/meminfo` e calcula o limite em bytes
+7. Executa o comando com `taskset` + `gamemoderun` (se disponível); se limite de RAM ativo, envolve tudo com `systemd-run --scope --user -p MemoryMax=...`
 
 ## Integração com launchers
 
@@ -187,8 +210,11 @@ proteus --help
 - `--cores > total` → clampa para o total de cores físicos
 - `--percent > 100` → clampa para 100%
 - `--percent < 1` → usa mínimo de 1 core
+- `--mem` e `--ram` juntos → erro e sai
 - Sem `gamemoderun` → roda apenas com `taskset`
 - Sem `taskset` → executa o comando diretamente
+- Sem `systemd-run` → avisa e roda sem limite de RAM (apenas CPU)
+- Sem `--mem`/`--ram` → nenhum limite de memória aplicado
 
 ## Exemplo prático
 
@@ -198,6 +224,9 @@ Para um sistema 8C/16T:
 - `proteus --percent 100 ./jogo` — 8 cores físicos (16 threads)
 - `proteus --percent 50 ./jogo` — 4 cores físicos (8 threads)
 - `proteus --cores 4 ./jogo` — 4 cores físicos exatos
+- `proteus --mem 4096 ./jogo` — 6 cores + limite de 4 GB RAM
+- `proteus --ram 50 ./jogo` — 6 cores + 50% da RAM total
+- `proteus --cores 4 --mem 6144 ./jogo` — 4 cores + 6 GB RAM
 
 ## Por que núcleos físicos?
 

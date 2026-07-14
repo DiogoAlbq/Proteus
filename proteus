@@ -12,9 +12,14 @@ Proteus — CPU physical core allocation wrapper
 
 Uso: proteus [OPÇÕES] <comando> [args...]
 
-Opções:
+Opções de CPU:
   --cores N       Dedica N núcleos físicos completos ao processo
   --percent N     Dedica N%% dos núcleos físicos totais (padrão: ${DEFAULT_PERCENT}%%)
+
+Opções de memória:
+  --mem N         Limita o processo a N MB de RAM (ex: --mem 4096 = 4 GB)
+  --ram N         Limita o processo a N%% da RAM total (ex: --ram 50 = metade)
+
   -h, --help      Mostra esta ajuda
 
 Exemplos (Ryzen 7 5700X = 8 cores físicos / 16 threads):
@@ -22,6 +27,9 @@ Exemplos (Ryzen 7 5700X = 8 cores físicos / 16 threads):
   proteus --percent 100 ./jogo      # 100%% = 8 cores (todos)
   proteus --percent 50 ./jogo       # 50%%  = 4 cores (0-3 + SMT)
   proteus --cores 4 ./jogo          # Exatos 4 cores (0-3 + SMT)
+  proteus --mem 4096 ./jogo         # 4 GB de RAM máx
+  proteus --ram 50 ./jogo           # 50%% da RAM total
+  proteus --cores 4 --mem 6144 ./jogo  # 4 cores, 6 GB RAM
 
 Integração:
   Steam:        proteus %command%
@@ -35,6 +43,8 @@ EOF
 # Parse args
 CORES_ARG=""
 PERCENT_ARG=""
+MEM_ARG=""
+RAM_ARG=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --cores)
@@ -49,6 +59,18 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             PERCENT_ARG="${2}"; shift 2 ;;
+        --mem)
+            if [[ $# -lt 2 || "$2" == --* ]]; then
+                echo "[proteus] Erro: --mem requer um valor (MB)" >&2
+                exit 1
+            fi
+            MEM_ARG="${2}"; shift 2 ;;
+        --ram)
+            if [[ $# -lt 2 || "$2" == --* ]]; then
+                echo "[proteus] Erro: --ram requer um valor (1-100)" >&2
+                exit 1
+            fi
+            RAM_ARG="${2}"; shift 2 ;;
         -h|--help)
             usage ;;
         --)
@@ -137,21 +159,82 @@ GAMEMODE_BIN=""
 command -v gamemoderun >/dev/null 2>&1 && GAMEMODE_BIN="gamemoderun"
 
 # ---------------------------------------------------------------------------
-# 5. Log e exec
+# 4b. Limite de memória RAM (--mem MB ou --ram %)
 # ---------------------------------------------------------------------------
-if ! command -v taskset >/dev/null 2>&1; then
-    echo "[proteus] aviso: taskset não encontrado, executando sem taskset" >&2
-    if [[ -n "$GAMEMODE_BIN" ]]; then
-        exec "$GAMEMODE_BIN" "$@"
-    else
-        exec "$@"
+MEM_LIMIT_BYTES=0
+MEM_INFO=""
+
+if [[ -n "$MEM_ARG" || -n "$RAM_ARG" ]]; then
+    if [[ -n "$MEM_ARG" && -n "$RAM_ARG" ]]; then
+        echo "[proteus] Erro: use --mem OU --ram, não ambos" >&2
+        exit 1
+    fi
+
+    if [[ -n "$MEM_ARG" ]]; then
+        [[ "$MEM_ARG" =~ ^[0-9]+$ ]] || { echo "[proteus] --mem deve ser inteiro positivo (MB)" >&2; exit 1; }
+        (( MEM_ARG < 1 )) && { echo "[proteus] --mem deve ser >= 1 MB" >&2; exit 1; }
+        MEM_LIMIT_BYTES=$(( MEM_ARG * 1024 * 1024 ))
+        MEM_INFO="${MEM_ARG}MB"
+    fi
+
+    if [[ -n "$RAM_ARG" ]]; then
+        [[ "$RAM_ARG" =~ ^[0-9]+$ ]] || { echo "[proteus] --ram deve ser inteiro 1-100" >&2; exit 1; }
+        (( RAM_ARG < 1 || RAM_ARG > 100 )) && { echo "[proteus] --ram deve ser 1-100" >&2; exit 1; }
+        # Total RAM em bytes (fallback: /proc/meminfo)
+        if [[ -r /proc/meminfo ]]; then
+            TOTAL_RAM_KB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+            TOTAL_RAM_BYTES=$(( TOTAL_RAM_KB * 1024 ))
+        else
+            echo "[proteus] Erro: não foi possível ler /proc/meminfo para --ram" >&2
+            exit 1
+        fi
+        MEM_LIMIT_BYTES=$(( TOTAL_RAM_BYTES * RAM_ARG / 100 ))
+        MEM_INFO="${RAM_ARG}% RAM"
+    fi
+
+    # Verifica systemd-run
+    if ! command -v systemd-run >/dev/null 2>&1; then
+        echo "[proteus] aviso: systemd-run não encontrado, limite de RAM não aplicado" >&2
+        MEM_LIMIT_BYTES=0
+        MEM_INFO=""
     fi
 fi
 
-echo "[proteus] físico: ${PHYSICAL_CORES}C/${THREADS_PER_CORE}T | alocado: ${TARGET_CORES} cores (${#SELECTED_THREADS[@]} threads: ${TASKSET_CPULIST}) | game: ${GAMEMODE_BIN:-none}" >&2
+# ---------------------------------------------------------------------------
+# 5. Log e exec
+# ---------------------------------------------------------------------------
+# Constrói o comando interno (taskset + gamemoderun + ...)
+INNER_CMD=()
+if command -v taskset >/dev/null 2>&1; then
+    INNER_CMD+=(taskset -c "$TASKSET_CPULIST")
+else
+    echo "[proteus] aviso: taskset não encontrado, executando sem afinidade de CPU" >&2
+fi
 
 if [[ -n "$GAMEMODE_BIN" ]]; then
-    exec taskset -c "$TASKSET_CPULIST" "$GAMEMODE_BIN" "$@"
+    INNER_CMD+=("$GAMEMODE_BIN")
+fi
+
+INNER_CMD+=("$@")
+
+# Determina info de CPU para log
+CPU_INFO="fisico: ${PHYSICAL_CORES}C/${THREADS_PER_CORE}T | alocado: ${TARGET_CORES} cores (${#SELECTED_THREADS[@]} threads: ${TASKSET_CPULIST})"
+GAME_INFO="game: ${GAMEMODE_BIN:-none}"
+
+if [[ $MEM_LIMIT_BYTES -gt 0 ]]; then
+    MEM_LOG=" | RAM: ${MEM_INFO}"
+    echo "[proteus] ${CPU_INFO} | ${GAME_INFO} | RAM limit: ${MEM_INFO} (systemd-run MemoryMax=${MEM_LIMIT_BYTES})" >&2
+
+    # Executa via systemd-run com MemoryMax
+    # --scope --user: roda no escopo da sessão do usuário (não cria serviço separado)
+    exec systemd-run --scope --user \
+        --property=MemoryMax=${MEM_LIMIT_BYTES} \
+        "${INNER_CMD[@]}"
 else
-    exec taskset -c "$TASKSET_CPULIST" "$@"
+    if [[ -n "$MEM_ARG$RAM_ARG" ]]; then
+        echo "[proteus] aviso: limite de RAM não pôde ser aplicado (sem systemd-run)" >&2
+    fi
+    MEM_LOG=""
+    echo "[proteus] ${CPU_INFO} | ${GAME_INFO}${MEM_LOG}" >&2
+    exec "${INNER_CMD[@]}"
 fi
