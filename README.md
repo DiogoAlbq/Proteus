@@ -112,7 +112,7 @@ proteus --cores 4 --cpu 80 --ram 50 ./game
 
 ## GPU Limits
 
-`--vram` and `--gpuram` **detect** the GPU (NVIDIA via `nvidia-smi`, AMD via `rocm-smi`) and show VRAM info in the log. The target value is **informational** — per-process GPU memory limits require datacenter hardware (NVIDIA MIG) or specialized drivers and can't be enforced on a standard PC.
+`--vram` and `--gpuram` **detect** the GPU (NVIDIA via `nvidia-smi`, AMD via `rocm-smi`) and show VRAM info in the log. The target value is **informational**.
 
 ## How It Works
 
