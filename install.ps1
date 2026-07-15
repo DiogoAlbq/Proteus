@@ -7,11 +7,15 @@ $ErrorActionPreference = "Stop"
 
 $InstallDir = "$env:USERPROFILE"
 $Target = Join-Path $InstallDir "proteus.ps1"
-$Src = Join-Path $PSScriptRoot "proteus.ps1"
+
+# resolve a pasta do script (fallback se $PSScriptRoot for $null)
+$scriptDir = $PSScriptRoot
+if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
+$Src = Join-Path $scriptDir "proteus.ps1"
 
 # confere que o arquivo fonte tá na pasta
 if (-not (Test-Path $Src)) {
-    Write-Error "[proteus-installer] Erro: 'proteus.ps1' nao encontrado em $PSScriptRoot"
+    Write-Error "[proteus-installer] Erro: 'proteus.ps1' nao encontrado em $scriptDir"
     exit 1
 }
 

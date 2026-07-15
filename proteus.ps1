@@ -7,6 +7,20 @@ $ErrorActionPreference = "Stop"
 $VERSION = "1.1.0"
 $DEFAULT_PERCENT = 75
 
+# helper: resolve o executável (procura no PATH se não tiver caminho)
+function Resolve-Executable([string]$exe) {
+    if (Test-Path $exe) { return $exe }
+    $found = Get-Command $exe -ErrorAction SilentlyContinue
+    if ($found) { return $found.Source }
+    return $exe
+}
+
+# helper: monta a lista de argumentos sem quebrar quando só tem o executável
+function Get-CommandArgs($cmdArray) {
+    if ($cmdArray.Length -le 1) { return @() }
+    return $cmdArray[1..($cmdArray.Length - 1)]
+}
+
 function Show-Usage {
     Write-Output @"
 Proteus v$VERSION - CPU physical core allocation wrapper (Windows)
@@ -133,7 +147,9 @@ try {
 
 if (-not $processors) {
     Write-Output "[proteus] Executando sem afinidade (CPU nao detectada)"
-    $p = Start-Process -FilePath $Command[0] -ArgumentList ($Command[1..($Command.Length - 1)]) -PassThru -NoNewWindow
+    $exe = Resolve-Executable $Command[0]
+    $cmdArgs = Get-CommandArgs $Command
+    $p = if ($cmdArgs.Count -gt 0) { Start-Process -FilePath $exe -ArgumentList $cmdArgs -PassThru -NoNewWindow } else { Start-Process -FilePath $exe -PassThru -NoNewWindow }
     $p.WaitForExit()
     exit $p.ExitCode
 }
@@ -148,7 +164,9 @@ foreach ($cpu in $processors) {
 
 if ($logicalThreads -le 0 -or $physicalCores -le 0) {
     Write-Warning "[proteus] Topologia invalida; executando sem afinidade"
-    $p = Start-Process -FilePath $Command[0] -ArgumentList ($Command[1..($Command.Length - 1)]) -PassThru -NoNewWindow
+    $exe = Resolve-Executable $Command[0]
+    $cmdArgs = Get-CommandArgs $Command
+    $p = if ($cmdArgs.Count -gt 0) { Start-Process -FilePath $exe -ArgumentList $cmdArgs -PassThru -NoNewWindow } else { Start-Process -FilePath $exe -PassThru -NoNewWindow }
     $p.WaitForExit()
     exit $p.ExitCode
 }
@@ -448,7 +466,13 @@ Write-Host "[proteus] $cpuInfo$ramInfo$cpuLog$gpuLog" -ForegroundColor Cyan
 
 # executa o processo, aplica afinidade e limites (RAM + CPU)
 try {
-    $p = Start-Process -FilePath $Command[0] -ArgumentList ($Command[1..($Command.Length - 1)]) -PassThru -NoNewWindow
+    $exe = Resolve-Executable $Command[0]
+    $cmdArgs = Get-CommandArgs $Command
+    if ($cmdArgs.Count -gt 0) {
+        $p = Start-Process -FilePath $exe -ArgumentList $cmdArgs -PassThru -NoNewWindow
+    } else {
+        $p = Start-Process -FilePath $exe -PassThru -NoNewWindow
+    }
     try {
         $p.ProcessorAffinity = [IntPtr]$affinityMask
     } catch {
