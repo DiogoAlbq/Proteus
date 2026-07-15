@@ -1,288 +1,140 @@
 # Proteus
 
-Proteus é um wrapper de linha de comando minimalista para alocar **núcleos físicos de CPU** a um processo por execução.
-Ele usa `lscpu` para montar uma máscara de CPU que inclui **todas as threads SMT** dos cores físicos selecionados e aplica essa máscara com `taskset`.
+Lightweight CLI wrapper that dedicates **physical CPU cores** (with all SMT threads) to a single process. Built for latency-sensitive games and apps on Linux and Windows.
 
-## Visão geral
+## Features
 
-Proteus foi criado para melhorar o comportamento de jogos e aplicativos sensíveis a latência no Linux.
-Ele reduz a contenção SMT ao garantir que o processo execute em núcleos físicos completos, não apenas em threads lógicas isoladas.
+- **CPU affinity** — pin a process to N physical cores (or a % of total)
+- **CPU quota** — throttle the process to N% of total CPU time (`--cpu`)
+- **RAM limit** — cap memory to N MB or N% of total (`--mem` / `--ram`)
+- **GPU detection** — detect GPU and show VRAM info (`--vram` / `--gpuram`)
+- Linux via `taskset` + `systemd-run` cgroups; Windows via PowerShell Job Objects
 
-## Requisitos
+## Requirements
 
-- Linux
-- `taskset` (coreutils)
-- `lscpu` (util-linux)
-- `gamemoderun` (opcional)
-- `systemd-run` (opcional, necessário para `--mem`/`--ram`)
-
----
-
-# Porte para Windows (`proteus.ps1`)
-
-O arquivo `proteus.ps1` é uma porta para Windows em PowerShell que define afinidade de processador usando a propriedade `ProcessorAffinity` do processo. Ele suporta `--cores`, `--percent`, `--mem` e `--ram` de forma equivalente ao script Linux, usando `Win32_Processor` (WMI/CIM) para detectar a topologia de CPU e `Win32_OperatingSystem` para a RAM total. O limite de memória é aplicado via **Job Objects** (`JOBOBJECT_EXTENDED_LIMIT_INFORMATION`).
-
-## Requisitos (Windows)
-
-- Windows 10 / 11 ou Windows Server 2016+
-- PowerShell 5.1 ou superior
-- Acesso a WMI/CIM para as classes `Win32_Processor` e `Win32_OperatingSystem`
-- Permissão para alterar afinidade do processo e criar Job Objects (conta padrão do usuário normalmente basta)
-
-## Uso (Windows)
-
-```powershell
-.\proteus.ps1 [OPÇÕES] <comando> [args...]
-```
-
-Opções:
-
-- `--cores N` — aloca exatamente `N` núcleos físicos completos
-- `--percent N` — aloca `N%` dos núcleos físicos totais (padrão: 75%)
-- `--cpu N` — limita o uso de CPU do processo a `N%` (1-100, cota de CPU)
-- `--mem N` — limita o processo a `N` MB de RAM (ex: `--mem 4096` = 4 GB)
-- `--ram N` — limita o processo a `N%` da RAM total (ex: `--ram 50` = metade)
-- `--vram N` — define um target de `N` MB de VRAM e mostra info da GPU detectada
-- `--gpuram N` — define um target de `N%` da VRAM total (ex: `--gpuram 50` = metade)
-- `-h`, `--help` — exibe a ajuda
-- `-v`, `--version` — exibe a versão
-- `--` — separa opções do comando (útil para comandos que começam com `-`)
-
-### Exemplos (Windows)
-
-```powershell
-.\proteus.ps1 .\jogo.exe
-.\proteus.ps1 --percent 100 .\jogo.exe
-.\proteus.ps1 --percent 50 .\jogo.exe
-.\proteus.ps1 --cores 4 .\jogo.exe --fullscreen
-.\proteus.ps1 --mem 4096 .\jogo.exe
-.\proteus.ps1 --ram 50 .\jogo.exe
-.\proteus.ps1 --cpu 50 .\jogo.exe
-.\proteus.ps1 --vram 2048 .\jogo.exe
-.\proteus.ps1 --gpuram 50 .\jogo.exe
-.\proteus.ps1 --cores 4 --mem 6144 .\jogo.exe
-.\proteus.ps1 --cores 4 --cpu 80 --ram 50 .\jogo.exe
-```
-
-## Instalação (Windows)
-
-### Opção 1 — Via git clone + instalador (recomendado)
-
-```powershell
-git clone https://github.com/DiogoAlbq/Proteus.git
-cd Proteus
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-### Opção 2 — Baixar ZIP e rodar o instalador
-
-Baixe o ZIP do repositório, extraia em qualquer pasta e execute:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-> O instalador copia `proteus.ps1` para `%USERPROFILE%\proteus.ps1` **sobrescrevendo** qualquer versão anterior, sem se conectar à internet.
-
-### Verificação (Windows)
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\proteus.ps1 --help
-```
-
-## Como funciona (Windows)
-
-1. Detecta a topologia de CPU via `Get-CimInstance Win32_Processor` (fallback para `Get-WmiObject`)
-2. Soma `NumberOfCores` (físicos) e `NumberOfLogicalProcessors` (lógicos) entre todos os sockets
-3. Calcula threads por core (SMT); se lógico não é múltiplo de físico, usa fallback de 1T/core com aviso
-4. Calcula quantos cores físicos alocar (`--cores`, `--percent`, ou padrão 75%)
-5. Seleciona os primeiros `N` cores físicos e todas as suas threads SMT
-6. Constrói uma máscara de afinidade `uint64` com bits correspondentes às threads selecionadas (limite: 64 threads)
-7. Se `--mem`/`--ram` foi passado, lê a RAM total via `Win32_OperatingSystem` e calcula o limite em bytes
-8. Inicia o comando com `Start-Process -PassThru`, aplica `$process.ProcessorAffinity`, cria um **Job Object** com `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` + `JOB_OBJECT_LIMIT_PROCESS_MEMORY` e assigna o processo ao Job
-9. Espera o término e retorna o código de saída
-
-## Integração com launchers (Windows)
-
-| Launcher | Configuração |
+| Platform | Requirements |
 |---|---|
-| Steam | `powershell -File proteus.ps1 %command%` |
-| Heroic | Wrapper Command: `powershell -File proteus.ps1` |
-| Bottles | `powershell -File proteus.ps1 %command%` |
-| Lutris (Windows) | Command Prefix: `powershell -File proteus.ps1` |
+| **Linux** | `taskset`, `lscpu`. Optional: `gamemoderun`, `systemd-run` (for `--mem`/`--ram`/`--cpu`) |
+| **Windows** | Windows 10+, PowerShell 5.1+, WMI access |
 
-## Limitações da porta Windows
-
-- A máscara de afinidade é `uint64`, limitando o suporte a **64 threads lógicas**
-- O Windows não expõe a topologia de forma tão granular quanto `lscpu` no Linux; a assumição linear (core `i` → threads `i*threadsPerCore` a `(i+1)*threadsPerCore - 1`) pode não refletir a ordem real do kernel em sistemas NUMA complexos
-- Se `NumberOfLogicalProcessors` não for múltiplo de `NumberOfCores`, o script assume 1 thread/core e exibe um aviso
-- Sem equivalente ao `gamemoderun` no Windows; a afinidade é aplicada via `ProcessorAffinity`
-- O limite de RAM via Job Object usa `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: se o PowerShell for fechado, o processo limitado também é terminado
-- Processos já associados a outro Job Object podem falhar ao ser assignados (raro em Windows 10+ com JobObjects aninhados habilitados)
-
-## Uso
-
-```bash
-proteus [OPÇÕES] <comando> [args...]
-```
-
-Opções de CPU:
-
-- `--cores N` — aloca exatamente `N` núcleos físicos completos
-- `--percent N` — aloca `N%` dos núcleos físicos totais (padrão: 75%)
-- `--cpu N` — limita o uso de CPU do processo a `N%` (1-100, cota de CPU)
-
-Opções de memória:
-
-- `--mem N` — limita o processo a `N` MB de RAM (ex: `--mem 4096` = 4 GB)
-- `--ram N` — limita o processo a `N%` da RAM total (ex: `--ram 50` = metade)
-
-Opções de GPU (informação/detecção):
-
-- `--vram N` — define um target de `N` MB de VRAM e mostra info da GPU detectada
-- `--gpuram N` — define um target de `N%` da VRAM total (ex: `--gpuram 50` = metade)
-
-Outras:
-
-- `-h`, `--help` — exibe a ajuda
-- `-v`, `--version` — exibe a versão
-- `--` — separa opções do comando
-
-## Exemplos
-
-```bash
-proteus ./jogo
-proteus --percent 100 ./jogo
-proteus --percent 50 ./jogo
-proteus --cores 4 ./jogo
-proteus --mem 4096 ./jogo
-proteus --ram 50 ./jogo
-proteus --cpu 50 ./jogo
-proteus --vram 2048 ./jogo
-proteus --gpuram 50 ./jogo
-proteus --cores 4 --mem 6144 ./jogo
-proteus --cores 4 --cpu 80 --ram 50 ./jogo
-```
-
-## Instalação
-
-### Opção 1 — Via git clone + instalador (recomendado)
-
-```bash
-git clone https://github.com/DiogoAlbq/Proteus.git
-cd Proteus
-sudo bash install.sh
-```
-
-> Se você já tem uma pasta `Proteus` de antes, rode `git pull` na pasta existente em vez de clonar de novo (ou delete a antiga antes).
-
-### Opção 2 — Baixar ZIP/tar e rodar o instalador
-
-Baixe o repositório como ZIP, extraia em qualquer pasta e execute:
-
-```bash
-sudo bash install.sh
-```
-
-> O instalador copia `proteus` para `/usr/local/bin/proteus` **sobrescrevendo** qualquer versão anterior, sem se conectar à internet.
-
-### Verificação
-
-Após a instalação, verifique se o comando está disponível:
-
-```bash
-proteus --help
-```
-
-## Atualização
+## Install
 
 ### Linux
 
-A atualização é igual à instalação: rode o instalador novamente e ele sobrescreve a versão antiga:
-
 ```bash
-# Se usou git clone:
+git clone https://github.com/DiogoAlbq/Proteus.git
 cd Proteus
-git pull
 sudo bash install.sh
-
-# Se baixou ZIP novo:
-# Extraia e rode: sudo bash install.sh
 ```
+
+> Re-run `sudo bash install.sh` any time to update — it overwrites the old version. No internet needed.
 
 ### Windows
 
-A atualização é igual à instalação: rode o instalador novamente e ele sobrescreve a versão antiga:
-
 ```powershell
-# Se usou git clone:
+git clone https://github.com/DiogoAlbq/Proteus.git
 cd Proteus
-git pull
 powershell -ExecutionPolicy Bypass -File .\install.ps1
-
-# Se baixou ZIP novo:
-# Extraia e rode: powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-## Como funciona
+> Re-run `install.ps1` any time to update. Installs to `%USERPROFILE%\proteus.ps1`.
 
-1. Lê a topologia real de CPU com `lscpu -p=CPU,CORE,SOCKET`
-2. Agrupa threads lógicas por core físico
-3. Calcula quantos cores físicos alocar
-4. Seleciona os primeiros `N` cores físicos na ordem do kernel
-5. Monta a lista de threads SMT para `taskset -c`
-6. Se `--mem`/`--ram` foi passado, lê a RAM total em `/proc/meminfo` e calcula o limite em bytes
-7. Executa o comando com `taskset` + `gamemoderun` (se disponível); se limite de RAM ativo, envolve tudo com `systemd-run --scope --user -p MemoryMax=...`
+## Usage
 
-## Integração com launchers
+```
+proteus [OPTIONS] <command> [args...]
+```
 
-| Launcher | Configuração |
+### Options
+
+| Option | Description |
 |---|---|
-| Steam | `proteus %command%` |
-| Lutris | Command Prefix: `proteus` |
-| Heroic | Wrapper Command: `proteus` |
-| Bottles | Launch Options: `proteus %command%` |
+| `--cores N` | Allocate exactly N physical cores |
+| `--percent N` | Allocate N% of physical cores (default: 75) |
+| `--cpu N` | Limit process to N% of total CPU time (1-100) |
+| `--mem N` | Limit process to N MB of RAM |
+| `--ram N` | Limit process to N% of total RAM |
+| `--vram N` | Set VRAM target (N MB) and show GPU info |
+| `--gpuram N` | Set VRAM target (N% of total) and show GPU info |
+| `-h`, `--help` | Show help |
+| `-v`, `--version` | Show version |
+| `--` | Separate options from command |
 
-> Para Bottles Flatpak:
-> `flatpak override --user --filesystem=/usr/local/bin:ro com.usebottles.bottles`
+### Examples
 
-## Comportamento esperado
+```bash
+# Linux
+proteus ./game
+proteus --cores 4 ./game
+proteus --percent 50 ./game
+proteus --cpu 50 ./game
+proteus --mem 4096 ./game
+proteus --ram 50 ./game
+proteus --cores 4 --cpu 80 --ram 50 ./game
+```
 
-- `--cores > total` → clampa para o total de cores físicos
-- `--percent > 100` → clampa para 100%
-- `--percent < 1` → usa mínimo de 1 core
-- `--mem` e `--ram` juntos → erro e sai
-- `--vram` e `--gpuram` juntos → erro e sai
-- Sem `gamemoderun` → roda apenas com `taskset`
-- Sem `taskset` → executa o comando diretamente
-- Sem `systemd-run` → avisa e roda sem limite de RAM/CPU (apenas afinidade)
-- Sem `--mem`/`--ram` → nenhum limite de memória aplicado
-- Sem `--cpu` → nenhuma cota de CPU aplicada
-- `--vram`/`--gpuram` → apenas detecta e mostra info da GPU; o target é informativo
+```powershell
+# Windows
+.\proteus.ps1 .\game.exe
+.\proteus.ps1 --cores 4 .\game.exe --fullscreen
+.\proteus.ps1 --mem 4096 .\game.exe
+```
 
-## Sobre os limites de GPU
+## Launcher Integration
 
-As flags `--vram` e `--gpuram` **detectam** a GPU e mostram a VRAM total no log. O valor de target é **informativo** — limitar a VRAM/cota de GPU por processo requer hardware de datacenter (MIG no caso da NVIDIA) ou drivers específicos. Num PC comum não há como impor o limite, então o Proteus apenas mostra o que detectou.
+| Launcher | Linux | Windows |
+|---|---|---|
+| Steam | `proteus %command%` | `powershell -File proteus.ps1 %command%` |
+| Lutris | Command Prefix: `proteus` | `powershell -File proteus.ps1` |
+| Heroic | Wrapper: `proteus` | Wrapper: `powershell -File proteus.ps1` |
+| Bottles | `proteus %command%` | `powershell -File proteus.ps1 %command%` |
 
-## Exemplo prático
+> Bottles Flatpak: `flatpak override --user --filesystem=/usr/local/bin:ro com.usebottles.bottles`
 
-Para um sistema 8C/16T:
+## 8C/16T Example
 
-- `proteus ./jogo` — 75% = 6 cores físicos (12 threads)
-- `proteus --percent 100 ./jogo` — 8 cores físicos (16 threads)
-- `proteus --percent 50 ./jogo` — 4 cores físicos (8 threads)
-- `proteus --cores 4 ./jogo` — 4 cores físicos exatos
-- `proteus --mem 4096 ./jogo` — 6 cores + limite de 4 GB RAM
-- `proteus --ram 50 ./jogo` — 6 cores + 50% da RAM total
-- `proteus --cores 4 --mem 6144 ./jogo` — 4 cores + 6 GB RAM
+| Command | Cores | Threads | RAM | CPU |
+|---|---|---|---|---|
+| `proteus ./game` | 6 | 12 | — | — |
+| `proteus --percent 100 ./game` | 8 | 16 | — | — |
+| `proteus --cores 4 ./game` | 4 | 8 | — | — |
+| `proteus --mem 4096 ./game` | 6 | 12 | 4 GB | — |
+| `proteus --cores 4 --cpu 80 --ram 50 ./game` | 4 | 8 | 50% | 80% |
 
-## Por que núcleos físicos?
+## Behavior
 
-Núcleos físicos completos evitam que a thread principal do jogo seja colocada em um par SMT instável com outra carga intensa.
-Isso melhora previsibilidade, IPC e latência em workloads single-thread sensíveis.
+- `--cores` or `--percent` above the total → clamps to max
+- `--mem` + `--ram` together → error
+- `--vram` + `--gpuram` together → error
+- No `taskset` → runs without affinity
+- No `systemd-run` → warns and skips RAM/CPU limits (affinity still applies)
+- No `--mem`/`--ram`/`--cpu` → no resource limits applied
 
-## Licença
+## GPU Limits
 
-Este projeto está licenciado sob a licença MIT. Veja o arquivo [LICENSE](LICENSE) para detalhes.
+`--vram` and `--gpuram` **detect** the GPU (NVIDIA via `nvidia-smi`, AMD via `rocm-smi`) and show VRAM info in the log. The target value is **informational** — per-process GPU memory limits require datacenter hardware (NVIDIA MIG) or specialized drivers and can't be enforced on a standard PC.
 
----
+## How It Works
+
+### Linux
+
+1. Reads CPU topology via `lscpu -p=CPU,CORE,SOCKET`
+2. Groups logical threads by physical core
+3. Selects the first N physical cores and all their SMT threads
+4. Builds a CPU list for `taskset -c`
+5. If `--mem`/`--ram`: reads `/proc/meminfo`, applies `MemoryMax` via `systemd-run --scope --user`
+6. If `--cpu`: applies `CPUQuota` via `systemd-run`
+7. Runs the command with `taskset` + `gamemoderun` (if available)
+
+### Windows
+
+1. Detects CPU via `Get-CimInstance Win32_Processor` (fallback: `Get-WmiObject`)
+2. Sums `NumberOfCores` and `NumberOfLogicalProcessors` across sockets
+3. Builds a `uint64` affinity mask (limit: 64 threads)
+4. If `--mem`/`--ram`: reads RAM via `Win32_OperatingSystem`, creates a Job Object with `JOB_OBJECT_LIMIT_PROCESS_MEMORY`
+5. If `--cpu`: sets `JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP` on the Job Object
+6. Starts the process with `Start-Process`, applies `ProcessorAffinity` and assigns to the Job Object
+
+## License
+
+MIT — see [LICENSE](LICENSE).
