@@ -39,8 +39,11 @@ Opções:
 
 - `--cores N` — aloca exatamente `N` núcleos físicos completos
 - `--percent N` — aloca `N%` dos núcleos físicos totais (padrão: 75%)
+- `--cpu N` — limita o uso de CPU do processo a `N%` (1-100, cota de CPU)
 - `--mem N` — limita o processo a `N` MB de RAM (ex: `--mem 4096` = 4 GB)
 - `--ram N` — limita o processo a `N%` da RAM total (ex: `--ram 50` = metade)
+- `--vram N` — define um target de `N` MB de VRAM e mostra info da GPU detectada
+- `--gpuram N` — define um target de `N%` da VRAM total (ex: `--gpuram 50` = metade)
 - `-h`, `--help` — exibe a ajuda
 - `-v`, `--version` — exibe a versão
 - `--` — separa opções do comando (útil para comandos que começam com `-`)
@@ -54,7 +57,11 @@ Opções:
 .\proteus.ps1 --cores 4 .\jogo.exe --fullscreen
 .\proteus.ps1 --mem 4096 .\jogo.exe
 .\proteus.ps1 --ram 50 .\jogo.exe
+.\proteus.ps1 --cpu 50 .\jogo.exe
+.\proteus.ps1 --vram 2048 .\jogo.exe
+.\proteus.ps1 --gpuram 50 .\jogo.exe
 .\proteus.ps1 --cores 4 --mem 6144 .\jogo.exe
+.\proteus.ps1 --cores 4 --cpu 80 --ram 50 .\jogo.exe
 ```
 
 ## Instalação (Windows)
@@ -123,11 +130,17 @@ Opções de CPU:
 
 - `--cores N` — aloca exatamente `N` núcleos físicos completos
 - `--percent N` — aloca `N%` dos núcleos físicos totais (padrão: 75%)
+- `--cpu N` — limita o uso de CPU do processo a `N%` (1-100, cota de CPU)
 
 Opções de memória:
 
 - `--mem N` — limita o processo a `N` MB de RAM (ex: `--mem 4096` = 4 GB)
 - `--ram N` — limita o processo a `N%` da RAM total (ex: `--ram 50` = metade)
+
+Opções de GPU (informação/detecção):
+
+- `--vram N` — define um target de `N` MB de VRAM e mostra info da GPU detectada
+- `--gpuram N` — define um target de `N%` da VRAM total (ex: `--gpuram 50` = metade)
 
 Outras:
 
@@ -144,7 +157,11 @@ proteus --percent 50 ./jogo
 proteus --cores 4 ./jogo
 proteus --mem 4096 ./jogo
 proteus --ram 50 ./jogo
+proteus --cpu 50 ./jogo
+proteus --vram 2048 ./jogo
+proteus --gpuram 50 ./jogo
 proteus --cores 4 --mem 6144 ./jogo
+proteus --cores 4 --cpu 80 --ram 50 ./jogo
 ```
 
 ## Instalação
@@ -235,10 +252,17 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 - `--percent > 100` → clampa para 100%
 - `--percent < 1` → usa mínimo de 1 core
 - `--mem` e `--ram` juntos → erro e sai
+- `--vram` e `--gpuram` juntos → erro e sai
 - Sem `gamemoderun` → roda apenas com `taskset`
 - Sem `taskset` → executa o comando diretamente
-- Sem `systemd-run` → avisa e roda sem limite de RAM (apenas CPU)
+- Sem `systemd-run` → avisa e roda sem limite de RAM/CPU (apenas afinidade)
 - Sem `--mem`/`--ram` → nenhum limite de memória aplicado
+- Sem `--cpu` → nenhuma cota de CPU aplicada
+- `--vram`/`--gpuram` → apenas detecta e mostra info da GPU; o target é informativo
+
+## Sobre os limites de GPU
+
+As flags `--vram` e `--gpuram` **detectam** a GPU e mostram a VRAM total no log. O valor de target é **informativo** — limitar a VRAM/cota de GPU por processo requer hardware de datacenter (MIG no caso da NVIDIA) ou drivers específicos. Num PC comum não há como impor o limite, então o Proteus apenas mostra o que detectou.
 
 ## Exemplo prático
 

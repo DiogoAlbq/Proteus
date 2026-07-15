@@ -1,6 +1,6 @@
 #!/bin/bash
-# Proteus — CPU physical core allocation wrapper
-# Muda de forma à vontade: dedica ncleos fisicos completos (ambas threads SMT) a um processo.
+# Proteus - wrapper para alocar núcleos físicos de CPU a um processo.
+# Dedicado a quem quer jogar no Linux sem perder performance pra SMT bagunçado.
 
 set -uo pipefail
 
@@ -16,12 +16,18 @@ Uso: proteus [OPÇÕES] <comando> [args...]
 Opções de CPU:
   --cores N       Dedica N núcleos físicos completos ao processo
   --percent N     Dedica N%% dos núcleos físicos totais (padrão: ${DEFAULT_PERCENT}%%)
+  --cpu N         Limita o uso de CPU do processo a N%% (1-100, cota de CPU)
 
 Opções de memória:
   --mem N         Limita o processo a N MB de RAM (ex: --mem 4096 = 4 GB)
   --ram N         Limita o processo a N%% da RAM total (ex: --ram 50 = metade)
 
+Opções de GPU (informação/detecção):
+  --vram N        Define um target de N MB de VRAM e mostra info da GPU detectada
+  --gpuram N      Define um target de N%% da VRAM total (ex: --gpuram 50 = metade)
+
   -h, --help      Mostra esta ajuda
+  -v, --version   Mostra a versão
 
 Exemplos (Ryzen 7 5700X = 8 cores físicos / 16 threads):
   proteus ./jogo                    # 75%% = 6 cores (0-5 + SMT)
@@ -30,7 +36,11 @@ Exemplos (Ryzen 7 5700X = 8 cores físicos / 16 threads):
   proteus --cores 4 ./jogo          # Exatos 4 cores (0-3 + SMT)
   proteus --mem 4096 ./jogo         # 4 GB de RAM máx
   proteus --ram 50 ./jogo           # 50%% da RAM total
+  proteus --cpu 50 ./jogo           # Limita processo a 50%% de CPU
+  proteus --vram 2048 ./jogo        # Target 2 GB VRAM + info GPU
+  proteus --gpuram 50 ./jogo        # Target 50%% VRAM + info GPU
   proteus --cores 4 --mem 6144 ./jogo  # 4 cores, 6 GB RAM
+  proteus --cores 4 --cpu 80 --ram 50 ./jogo  # 4 cores, 80%% CPU, 50%% RAM
 
 Integração:
   Steam:        proteus %command%
@@ -41,11 +51,14 @@ EOF
     exit 0
 }
 
-# Parse args
+# argumentos
 CORES_ARG=""
 PERCENT_ARG=""
 MEM_ARG=""
 RAM_ARG=""
+CPU_ARG=""
+VRAM_ARG=""
+GPURAM_ARG=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --cores)
@@ -72,6 +85,24 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             RAM_ARG="${2}"; shift 2 ;;
+        --cpu)
+            if [[ $# -lt 2 || "$2" == --* ]]; then
+                echo "[proteus] Erro: --cpu requer um valor (1-100)" >&2
+                exit 1
+            fi
+            CPU_ARG="${2}"; shift 2 ;;
+        --vram)
+            if [[ $# -lt 2 || "$2" == --* ]]; then
+                echo "[proteus] Erro: --vram requer um valor (MB)" >&2
+                exit 1
+            fi
+            VRAM_ARG="${2}"; shift 2 ;;
+        --gpuram)
+            if [[ $# -lt 2 || "$2" == --* ]]; then
+                echo "[proteus] Erro: --gpuram requer um valor (1-100)" >&2
+                exit 1
+            fi
+            GPURAM_ARG="${2}"; shift 2 ;;
         -h|--help)
             usage ;;
         -v|--version)
@@ -90,8 +121,7 @@ if ! command -v lscpu >/dev/null 2>&1; then
     exec "$@"
 fi
 
-# ---------------------------------------------------------------------------
-# 1. Detecta topologia real via lscpu -p (ordem BIOS/board, não assume linear)
+# lê a topologia real da CPU com lscpu -p (na ordem que o kernel vê, não assume linear)
 # ---------------------------------------------------------------------------
 mapfile -t TOPOLOGY < <(lscpu -p=CPU,CORE,SOCKET 2>/dev/null | grep -v '^#' | grep -E '^[0-9]')
 if [[ ${#TOPOLOGY[@]} -eq 0 ]]; then
@@ -99,7 +129,7 @@ if [[ ${#TOPOLOGY[@]} -eq 0 ]]; then
     exec "$@"
 fi
 
-# Agrupa threads por core físico
+# agrupa as threads por core físico
 declare -A CORE_THREADS=()
 TOTAL_THREADS=0
 for line in "${TOPOLOGY[@]}"; do
@@ -110,7 +140,7 @@ for line in "${TOPOLOGY[@]}"; do
  done
 PHYSICAL_CORES=${#CORE_THREADS[@]}
 
-# Ordena cores fisicamente (0,1,2...) — ordem do lscpu já reflete topologia real
+# ordena os cores (0,1,2...) - o lscpu já na ordem certa
 mapfile -t SORTED_CORES < <(printf '%s\n' "${!CORE_THREADS[@]}" | sort -n)
 
 THREADS_MIN=0
@@ -125,7 +155,8 @@ if [[ $THREADS_MIN -eq $THREADS_MAX ]]; then
 else
     THREADS_PER_CORE="${THREADS_MIN}-${THREADS_MAX}"
 fi
-# ---------------------------------------------------------------------------
+
+# calcula quantos cores físicos alocar
 TARGET_CORES=0
 if [[ -n "$CORES_ARG" ]]; then
     [[ "$CORES_ARG" =~ ^[0-9]+$ ]] || { echo "[proteus] --cores deve ser inteiro positivo" >&2; exit 1; }
@@ -138,13 +169,11 @@ else
     TARGET_CORES=$(( (PHYSICAL_CORES * DEFAULT_PERCENT + 99) / 100 ))
 fi
 
-# Clamp
+# clamp pra não passar do total
 (( TARGET_CORES < 1 )) && TARGET_CORES=1
 (( TARGET_CORES > PHYSICAL_CORES )) && TARGET_CORES=$PHYSICAL_CORES
 
-# ---------------------------------------------------------------------------
-# 3. Seleciona os PRIMEIROS N cores físicos para o jogo
-# ---------------------------------------------------------------------------
+# pega os primeiros N cores físicos e suas threads SMT
 SELECTED_THREADS=()
 for (( i=0; i<TARGET_CORES; i++ )); do
     core="${SORTED_CORES[i]}"
@@ -155,15 +184,11 @@ done
 
 TASKSET_CPULIST=$(IFS=,; echo "${SELECTED_THREADS[*]}")
 
-# ---------------------------------------------------------------------------
-# 4. GameMode (opcional, complementar)
-# ---------------------------------------------------------------------------
+# GameMode se tiver instalado
 GAMEMODE_BIN=""
 command -v gamemoderun >/dev/null 2>&1 && GAMEMODE_BIN="gamemoderun"
 
-# ---------------------------------------------------------------------------
-# 4b. Limite de memória RAM (--mem MB ou --ram %)
-# ---------------------------------------------------------------------------
+# limite de RAM (--mem em MB ou --ram em %)
 MEM_LIMIT_BYTES=0
 MEM_INFO=""
 
@@ -183,7 +208,7 @@ if [[ -n "$MEM_ARG" || -n "$RAM_ARG" ]]; then
     if [[ -n "$RAM_ARG" ]]; then
         [[ "$RAM_ARG" =~ ^[0-9]+$ ]] || { echo "[proteus] --ram deve ser inteiro 1-100" >&2; exit 1; }
         (( RAM_ARG < 1 || RAM_ARG > 100 )) && { echo "[proteus] --ram deve ser 1-100" >&2; exit 1; }
-        # Total RAM em bytes (fallback: /proc/meminfo)
+        # RAM total lê do /proc/meminfo
         if [[ -r /proc/meminfo ]]; then
             TOTAL_RAM_KB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
             TOTAL_RAM_BYTES=$(( TOTAL_RAM_KB * 1024 ))
@@ -195,7 +220,7 @@ if [[ -n "$MEM_ARG" || -n "$RAM_ARG" ]]; then
         MEM_INFO="${RAM_ARG}% RAM"
     fi
 
-    # Verifica systemd-run
+    # precisa de systemd-run pra funcionar
     if ! command -v systemd-run >/dev/null 2>&1; then
         echo "[proteus] aviso: systemd-run não encontrado, limite de RAM não aplicado" >&2
         MEM_LIMIT_BYTES=0
@@ -203,10 +228,96 @@ if [[ -n "$MEM_ARG" || -n "$RAM_ARG" ]]; then
     fi
 fi
 
-# ---------------------------------------------------------------------------
-# 5. Log e exec
-# ---------------------------------------------------------------------------
-# Constrói o comando interno (taskset + gamemoderun + ...)
+# cota de CPU (--cpu N%)
+CPU_QUOTA=""
+CPU_INFO_QUOTA=""
+
+if [[ -n "$CPU_ARG" ]]; then
+    [[ "$CPU_ARG" =~ ^[0-9]+$ ]] || { echo "[proteus] --cpu deve ser inteiro 1-100" >&2; exit 1; }
+    (( CPU_ARG < 1 || CPU_ARG > 100 )) && { echo "[proteus] --cpu deve ser 1-100" >&2; exit 1; }
+    # systemd aceita "N%" como cota
+    CPU_QUOTA="${CPU_ARG}%"
+    CPU_INFO_QUOTA="${CPU_ARG}% CPU"
+
+    if ! command -v systemd-run >/dev/null 2>&1; then
+        echo "[proteus] aviso: systemd-run não encontrado, cota de CPU não aplicada" >&2
+        CPU_QUOTA=""
+        CPU_INFO_QUOTA=""
+    fi
+fi
+
+# detecção de GPU (--vram MB ou --gpuram %) - info e target, não limita de verdade
+GPU_LOG=""
+
+if [[ -n "$VRAM_ARG" || -n "$GPURAM_ARG" ]]; then
+    if [[ -n "$VRAM_ARG" && -n "$GPURAM_ARG" ]]; then
+        echo "[proteus] Erro: use --vram OU --gpuram, não ambos" >&2
+        exit 1
+    fi
+
+    if [[ -n "$VRAM_ARG" ]]; then
+        [[ "$VRAM_ARG" =~ ^[0-9]+$ ]] || { echo "[proteus] --vram deve ser inteiro positivo (MB)" >&2; exit 1; }
+        (( VRAM_ARG < 1 )) && { echo "[proteus] --vram deve ser >= 1 MB" >&2; exit 1; }
+    fi
+
+    if [[ -n "$GPURAM_ARG" ]]; then
+        [[ "$GPURAM_ARG" =~ ^[0-9]+$ ]] || { echo "[proteus] --gpuram deve ser inteiro 1-100" >&2; exit 1; }
+        (( GPURAM_ARG < 1 || GPURAM_ARG > 100 )) && { echo "[proteus] --gpuram deve ser 1-100" >&2; exit 1; }
+    fi
+
+    # NVIDIA via nvidia-smi
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+        GPU_VRAM_TOTAL_MB=0
+        if command -v nvidia-smi >/dev/null 2>&1; then
+            GPU_VRAM_TOTAL_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
+        fi
+        if [[ -n "$GPU_NAME" && -n "$GPU_VRAM_TOTAL_MB" ]]; then
+            if [[ -n "$VRAM_ARG" ]]; then
+                GPU_LOG=" | GPU: ${GPU_NAME} (${GPU_VRAM_TOTAL_MB}MB total) | VRAM target: ${VRAM_ARG}MB"
+            else
+                TARGET_VRAM=$(( GPU_VRAM_TOTAL_MB * GPURAM_ARG / 100 ))
+                GPU_LOG=" | GPU: ${GPU_NAME} (${GPU_VRAM_TOTAL_MB}MB total) | VRAM target: ${TARGET_VRAM}MB (${GPURAM_ARG}%)"
+            fi
+        else
+            GPU_LOG=" | GPU: NVIDIA detectada mas sem info"
+        fi
+
+    # AMD via rocm-smi
+    elif command -v rocm-smi >/dev/null 2>&1; then
+        ROCM_OUT=$(rocm-smi --showproductname --json 2>/dev/null)
+        GPU_NAME=$(echo "$ROCM_OUT" | grep -o '"Card series": *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"//')
+        GPU_VRAM_TOTAL_MB=$(rocm-smi --showmeminfo vram --json 2>/dev/null | grep -o '"Memory": *[0-9]*' | head -1 | sed 's/.*: *//')
+        # rocm-smi entrega em bytes, converte pra MB
+        if [[ -n "$GPU_VRAM_TOTAL_MB" ]]; then
+            GPU_VRAM_TOTAL_MB=$(( GPU_VRAM_TOTAL_MB / 1024 / 1024 ))
+        fi
+        if [[ -n "$GPU_NAME" && -n "$GPU_VRAM_TOTAL_MB" ]]; then
+            if [[ -n "$VRAM_ARG" ]]; then
+                GPU_LOG=" | GPU: ${GPU_NAME} (${GPU_VRAM_TOTAL_MB}MB total) | VRAM target: ${VRAM_ARG}MB"
+            else
+                TARGET_VRAM=$(( GPU_VRAM_TOTAL_MB * GPURAM_ARG / 100 ))
+                GPU_LOG=" | GPU: ${GPU_NAME} (${GPU_VRAM_TOTAL_MB}MB total) | VRAM target: ${TARGET_VRAM}MB (${GPURAM_ARG}%)"
+            fi
+        else
+            GPU_LOG=" | GPU: AMD detectada mas sem info"
+        fi
+
+    # Intel - só detecta, não tem VRAM fácil de ler
+    elif command -v intel_gpu_top >/dev/null 2>&1; then
+        GPU_LOG=" | GPU: Intel detectada (intel_gpu_top). Limites de VRAM não suportados para Intel."
+
+    else
+        echo "[proteus] aviso: nenhuma ferramenta de GPU encontrada (nvidia-smi/rocm-smi/intel_gpu_top)" >&2
+        if [[ -n "$VRAM_ARG" ]]; then
+            GPU_LOG=" | GPU: não detectada | VRAM target: ${VRAM_ARG}MB (não aplicável)"
+        else
+            GPU_LOG=" | GPU: não detectada | VRAM target: ${GPURAM_ARG}% (não aplicável)"
+        fi
+    fi
+fi
+
+# montando o comando final (taskset + gamemoderun + ...)
 INNER_CMD=()
 if command -v taskset >/dev/null 2>&1; then
     INNER_CMD+=(taskset -c "$TASKSET_CPULIST")
@@ -220,24 +331,30 @@ fi
 
 INNER_CMD+=("$@")
 
-# Determina info de CPU para log
+# info pro log
 CPU_INFO="fisico: ${PHYSICAL_CORES}C/${THREADS_PER_CORE}T | alocado: ${TARGET_CORES} cores (${#SELECTED_THREADS[@]} threads: ${TASKSET_CPULIST})"
 GAME_INFO="game: ${GAMEMODE_BIN:-none}"
+RAM_LOG="${MEM_INFO:+ | RAM: ${MEM_INFO}}"
+CPU_LOG="${CPU_INFO_QUOTA:+ | CPU quota: ${CPU_INFO_QUOTA}}"
 
+# se tiver qualquer limite, manda tudo via systemd-run
+SYSTEMD_PROPS=()
 if [[ $MEM_LIMIT_BYTES -gt 0 ]]; then
-    MEM_LOG=" | RAM: ${MEM_INFO}"
-    echo "[proteus] ${CPU_INFO} | ${GAME_INFO} | RAM limit: ${MEM_INFO} (systemd-run MemoryMax=${MEM_LIMIT_BYTES})" >&2
+    SYSTEMD_PROPS+=("--property=MemoryMax=${MEM_LIMIT_BYTES}")
+fi
+if [[ -n "$CPU_QUOTA" ]]; then
+    SYSTEMD_PROPS+=("--property=CPUQuota=${CPU_QUOTA}")
+fi
 
-    # Executa via systemd-run com MemoryMax
-    # --scope --user: roda no escopo da sessão do usuário (não cria serviço separado)
+if [[ ${#SYSTEMD_PROPS[@]} -gt 0 ]]; then
+    echo "[proteus] ${CPU_INFO} | ${GAME_INFO}${RAM_LOG}${CPU_LOG}${GPU_LOG}" >&2
     exec systemd-run --scope --user \
-        --property=MemoryMax=${MEM_LIMIT_BYTES} \
+        "${SYSTEMD_PROPS[@]}" \
         "${INNER_CMD[@]}"
 else
-    if [[ -n "$MEM_ARG$RAM_ARG" ]]; then
-        echo "[proteus] aviso: limite de RAM não pôde ser aplicado (sem systemd-run)" >&2
+    if [[ -n "$MEM_ARG$RAM_ARG$CPU_ARG" ]]; then
+        echo "[proteus] aviso: limites não puderam ser aplicados (sem systemd-run)" >&2
     fi
-    MEM_LOG=""
-    echo "[proteus] ${CPU_INFO} | ${GAME_INFO}${MEM_LOG}" >&2
+    echo "[proteus] ${CPU_INFO} | ${GAME_INFO}${GPU_LOG}" >&2
     exec "${INNER_CMD[@]}"
 fi

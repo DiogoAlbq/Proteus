@@ -1,5 +1,5 @@
-# Proteus — CPU physical core allocation wrapper (Windows PowerShell port)
-# Dedica ncleos fisicos completos (ambas threads SMT) a um processo no Windows.
+# Proteus - wrapper pra alocar núcleos físicos de CPU a um processo (porte Windows).
+# Feito pra quem joga no Windows e quer Affinidade + limite de RAM/cota de CPU sem complicação.
 
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
@@ -16,12 +16,18 @@ Uso: proteus.ps1 [OPCOES] <comando> [args...]
 Opcoes de CPU:
   --cores N       Dedica N nucleos fisicos completos ao processo
   --percent N     Dedica N% dos nucleos fisicos totais (padrao: $DEFAULT_PERCENT%)
+  --cpu N         Limita o uso de CPU do processo a N% (1-100, cota de CPU)
 
 Opcoes de memoria:
   --mem N         Limita o processo a N MB de RAM (ex: --mem 4096 = 4 GB)
   --ram N         Limita o processo a N% da RAM total (ex: --ram 50 = metade)
 
+Opcoes de GPU (informacao/deteccao):
+  --vram N        Define um target de N MB de VRAM e mostra info da GPU detectada
+  --gpuram N      Define um target de N% da VRAM total (ex: --gpuram 50 = metade)
+
   -h, --help      Mostra esta ajuda
+  -v, --version   Mostra a versao
 
 Exemplos (Ryzen 7 5700X = 8 cores fisicos / 16 threads):
   .\proteus.ps1 .\jogo.exe                  # 75% = 6 cores (0-5 + SMT)
@@ -30,7 +36,11 @@ Exemplos (Ryzen 7 5700X = 8 cores fisicos / 16 threads):
   .\proteus.ps1 --cores 4 .\jogo.exe        # Exatos 4 cores (0-3 + SMT)
   .\proteus.ps1 --mem 4096 .\jogo.exe       # 4 GB de RAM max
   .\proteus.ps1 --ram 50 .\jogo.exe          # 50% da RAM total
+  .\proteus.ps1 --cpu 50 .\jogo.exe          # Limita processo a 50% de CPU
+  .\proteus.ps1 --vram 2048 .\jogo.exe       # Target 2 GB VRAM + info GPU
+  .\proteus.ps1 --gpuram 50 .\jogo.exe       # Target 50% VRAM + info GPU
   .\proteus.ps1 --cores 4 --mem 6144 .\jogo.exe  # 4 cores, 6 GB RAM
+  .\proteus.ps1 --cores 4 --cpu 80 --ram 50 .\jogo.exe  # 4 cores, 80% CPU, 50% RAM
 
 Integracao:
   Steam:        powershell -File proteus.ps1 %command%
@@ -40,13 +50,14 @@ Integracao:
     exit 0
 }
 
-# ---------------------------------------------------------------------------
-# Parser de argumentos
-# ---------------------------------------------------------------------------
+# lê os argumentos
 $CoresArg   = $null
 $PercentArg = $null
 $MemArg     = $null
 $RamArg     = $null
+$CpuArg     = $null
+$VramArg    = $null
+$GpuramArg  = $null
 $Command    = @()
 $Parsing    = $true
 $SkipNext   = $false
@@ -79,6 +90,24 @@ for ($i = 0; $i -lt $args.Length; $i++) {
             }
             $RamArg = $args[$i + 1]; $i++
         }
+        "--cpu" {
+            if (($i + 1) -ge $args.Length -or $args[$i + 1] -match "^-{1,2}") {
+                Write-Error "[proteus] Erro: --cpu requer um valor (1-100)" -ErrorAction Stop
+            }
+            $CpuArg = $args[$i + 1]; $i++
+        }
+        "--vram" {
+            if (($i + 1) -ge $args.Length -or $args[$i + 1] -match "^-{1,2}") {
+                Write-Error "[proteus] Erro: --vram requer um valor (MB)" -ErrorAction Stop
+            }
+            $VramArg = $args[$i + 1]; $i++
+        }
+        "--gpuram" {
+            if (($i + 1) -ge $args.Length -or $args[$i + 1] -match "^-{1,2}") {
+                Write-Error "[proteus] Erro: --gpuram requer um valor (1-100)" -ErrorAction Stop
+            }
+            $GpuramArg = $args[$i + 1]; $i++
+        }
         "-h" { Show-Usage }
         "--help" { Show-Usage }
         "-v" { Write-Output "proteus $VERSION"; exit 0 }
@@ -90,9 +119,7 @@ for ($i = 0; $i -lt $args.Length; $i++) {
 
 if ($Command.Count -eq 0) { Show-Usage }
 
-# ---------------------------------------------------------------------------
-# 2. Deteccao de CPU via WMI/CIM
-# ---------------------------------------------------------------------------
+# detecta CPU via WMI - tenta CIM primeiro, fallback pra WMI
 $processors = $null
 try {
     $processors = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop
@@ -111,9 +138,7 @@ if (-not $processors) {
     exit $p.ExitCode
 }
 
-# ---------------------------------------------------------------------------
-# 3. Calculo da topologia
-# ---------------------------------------------------------------------------
+# soma cores físicos e threads lógicas
 $physicalCores = 0
 $logicalThreads = 0
 foreach ($cpu in $processors) {
@@ -128,7 +153,7 @@ if ($logicalThreads -le 0 -or $physicalCores -le 0) {
     exit $p.ExitCode
 }
 
-# Threads por core (SMT)
+# threads por core (SMT)
 $threadsPerCore = 1
 $smtWarn = $false
 if (($logicalThreads % $physicalCores) -eq 0) {
@@ -138,9 +163,7 @@ if (($logicalThreads % $physicalCores) -eq 0) {
     $smtWarn = $true
 }
 
-# ---------------------------------------------------------------------------
-# 4. Determinar numero de cores a alocar
-# ---------------------------------------------------------------------------
+# quantos cores físicos vamos usar
 $targetCores = 0
 if ($CoresArg) {
     if ($CoresArg -notmatch "^\d+$" -or [int]$CoresArg -lt 1) {
@@ -156,13 +179,11 @@ if ($CoresArg) {
     $targetCores = [math]::Ceiling(($physicalCores * $DEFAULT_PERCENT) / 100.0)
 }
 
-# Clamp
+# não deixa passar do total
 if ($targetCores -lt 1) { $targetCores = 1 }
 if ($targetCores -gt $physicalCores) { $targetCores = $physicalCores }
 
-# ---------------------------------------------------------------------------
-# 5. Montar lista de threads logicas selecionadas (primeiros N cores fisicos)
-# ---------------------------------------------------------------------------
+# monta lista de threads lógicas (primeiros N cores * threads por core)
 $selectedThreads = [System.Collections.ArrayList]::new()
 for ($core = 0; $core -lt $targetCores; $core++) {
     for ($t = 0; $t -lt $threadsPerCore; $t++) {
@@ -173,13 +194,7 @@ for ($core = 0; $core -lt $targetCores; $core++) {
     }
 }
 
-# ---------------------------------------------------------------------------
-# 6. Gerar mascara de afinidade (ProcessorAffinity)
-# Limite: 64 threads logicas (uint64)
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# 6b. Calcular limite de memoria (--mem MB ou --ram %)
-# ---------------------------------------------------------------------------
+# limite de RAM (--mem MB ou --ram %)
 $memLimitBytes = [uint64]0
 $memInfo = ""
 
@@ -197,7 +212,7 @@ if ($MemArg) {
     if ($RamArg -notmatch "^\d+$" -or [int]$RamArg -lt 1 -or [int]$RamArg -gt 100) {
         Write-Error "[proteus] --ram deve ser inteiro 1-100" -ErrorAction Stop
     }
-    # RAM total via Win32_OperatingSystem (TotalVisibleMemorySize em KB)
+    # RAM total via Win32_OperatingSystem (em KB)
     $totalRamKB = 0
     try {
         $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
@@ -217,9 +232,7 @@ if ($MemArg) {
     }
 }
 
-# ---------------------------------------------------------------------------
-# 6c. Helpers P/Invoke para Job Objects (limite de memoria no Windows)
-# ---------------------------------------------------------------------------
+# P/Invoke pra kernel32 - Job Objects e controle de CPU rate
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -237,6 +250,7 @@ public static class JobObject {
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool CloseHandle(IntPtr hObject);
 
+    // structs do Job Object pra limite de RAM
     // JOBOBJECT_BASIC_LIMIT_INFORMATION
     [StructLayout(LayoutKind.Sequential)]
     public struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
@@ -272,37 +286,81 @@ public static class JobObject {
         public ulong OtherTransferCount;
     }
 
+    // bitfield flags
     public const int JobObjectExtendedLimitInformation = 9;
+    public const int JobObjectCpuRateControlInformation = 15;
     public const uint JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x100;
     public const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+    public const uint JOB_OBJECT_CPU_RATE_CONTROL_ENABLE = 0x1;
+    public const uint JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP = 0x4;
+
+    // JOBOBJECT_CPU_RATE_CONTROL_INFORMATION
+    [StructLayout(LayoutKind.Sequential)]
+    public struct JOBOBJECT_CPU_RATE_CONTROL_INFORMATION {
+        public uint ControlFlags;
+        public uint CpuRate;
+    }
 }
 "@
 
 $jobHandle = [IntPtr]::Zero
 
-function Set-ProcessMemoryLimit([IntPtr]$processHandle, [uint64]$memBytes) {
+# cota de CPU (--cpu N%)
+$cpuQuotaRate = 0
+$cpuQuotaInfo = ""
+
+if ($CpuArg) {
+    if ($CpuArg -notmatch "^\d+$" -or [int]$CpuArg -lt 1 -or [int]$CpuArg -gt 100) {
+        Write-Error "[proteus] --cpu deve ser inteiro 1-100" -ErrorAction Stop
+    }
+    # CpuRate = percent * 100 (50% vira 5000)
+    $cpuQuotaRate = ([int]$CpuArg) * 100
+    $cpuQuotaInfo = "${CpuArg}% CPU"
+}
+
+function Set-ProcessLimits([IntPtr]$processHandle, [uint64]$memBytes, [int]$cpuRate) {
     $jobHandle = [JobObject]::CreateJobObject([IntPtr]::Zero, $null)
     if ($jobHandle -eq [IntPtr]::Zero) {
         Write-Warning "[proteus] Falha ao criar Job Object"
         return [IntPtr]::Zero
     }
 
-    $extended = New-Object JobObject+JOBOBJECT_EXTENDED_LIMIT_INFORMATION
-    $extended.BasicLimitInformation.LimitFlags = [JobObject]::JOB_OBJECT_LIMIT_PROCESS_MEMORY -bor [JobObject]::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    $extended.ProcessMemoryLimit = [UIntPtr]$memBytes
+    # Limites estendidos = RAM
+    if ($memBytes -gt 0) {
+        $extended = New-Object JobObject+JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+        $extended.BasicLimitInformation.LimitFlags = [JobObject]::JOB_OBJECT_LIMIT_PROCESS_MEMORY -bor [JobObject]::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        $extended.ProcessMemoryLimit = [UIntPtr]$memBytes
 
-    $size = [System.Runtime.InteropServices.Marshal]::SizeOf($extended)
-    $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($size)
-    try {
-        [System.Runtime.InteropServices.Marshal]::StructureToPtr($extended, $ptr, $false)
-        $ok = [JobObject]::SetInformationJobObject($jobHandle, [JobObject]::JobObjectExtendedLimitInformation, $ptr, $size)
-        if (-not $ok) {
-            Write-Warning "[proteus] Falha ao definir limite de memoria no Job Object"
-            [JobObject]::CloseHandle($jobHandle) | Out-Null
-            return [IntPtr]::Zero
+        $size = [System.Runtime.InteropServices.Marshal]::SizeOf($extended)
+        $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($size)
+        try {
+            [System.Runtime.InteropServices.Marshal]::StructureToPtr($extended, $ptr, $false)
+            $ok = [JobObject]::SetInformationJobObject($jobHandle, [JobObject]::JobObjectExtendedLimitInformation, $ptr, $size)
+            if (-not $ok) {
+                Write-Warning "[proteus] Falha ao definir limite de memoria no Job Object"
+            }
+        } finally {
+            [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
         }
-    } finally {
-        [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
+    }
+
+    # Cota de CPU via rate control
+    if ($cpuRate -gt 0) {
+        $cpu = New-Object JobObject+JOBOBJECT_CPU_RATE_CONTROL_INFORMATION
+        $cpu.ControlFlags = [JobObject]::JOB_OBJECT_CPU_RATE_CONTROL_ENABLE -bor [JobObject]::JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP
+        $cpu.CpuRate = [uint32]$cpuRate
+
+        $size = [System.Runtime.InteropServices.Marshal]::SizeOf($cpu)
+        $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($size)
+        try {
+            [System.Runtime.InteropServices.Marshal]::StructureToPtr($cpu, $ptr, $false)
+            $ok = [JobObject]::SetInformationJobObject($jobHandle, [JobObject]::JobObjectCpuRateControlInformation, $ptr, $size)
+            if (-not $ok) {
+                Write-Warning "[proteus] Falha ao definir cota de CPU no Job Object"
+            }
+        } finally {
+            [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
+        }
     }
 
     $assigned = [JobObject]::AssignProcessToJobObject($jobHandle, $processHandle)
@@ -315,6 +373,7 @@ function Set-ProcessMemoryLimit([IntPtr]$processHandle, [uint64]$memBytes) {
     return $jobHandle
 }
 
+# mascara de afinidade (uint64) — cabe até 64 threads
 if ($selectedThreads.Count -gt 64) {
     Write-Warning "[proteus] Mais de 64 threads detectadas; limitando a 64"
     $selectedThreads = $selectedThreads[0..63]
@@ -333,11 +392,61 @@ $threadList = ($selectedThreads -join ",")
 $tpc = if ($smtWarn) { "1T (fallback)" } else { "${threadsPerCore}T" }
 $cpuInfo = "fisico: ${physicalCores}C/$tpc | alocado: $targetCores cores ($($selectedThreads.Count) threads: $threadList)"
 $ramInfo = if ($memLimitBytes -gt 0) { " | RAM limit: $memInfo" } else { "" }
-Write-Host "[proteus] $cpuInfo$ramInfo" -ForegroundColor Cyan
+$cpuLog = if ($cpuQuotaInfo) { " | CPU quota: $cpuQuotaInfo" } else { "" }
 
-# ---------------------------------------------------------------------------
-# 7. Executar o comando com afinidade e/ou limite de memoria aplicados
-# ---------------------------------------------------------------------------
+# info da GPU (--vram MB ou --gpuram %) - informativo, não limita de verdade
+$gpuLog = ""
+
+if ($VramArg -and $GpuramArg) {
+    Write-Error "[proteus] Erro: use --vram OU --gpuram, nao ambos" -ErrorAction Stop
+}
+
+if ($VramArg) {
+    if ($VramArg -notmatch "^\d+$" -or [int]$VramArg -lt 1) {
+        Write-Error "[proteus] --vram deve ser inteiro positivo (MB)" -ErrorAction Stop
+    }
+}
+
+if ($GpuramArg) {
+    if ($GpuramArg -notmatch "^\d+$" -or [int]$GpuramArg -lt 1 -or [int]$GpuramArg -gt 100) {
+        Write-Error "[proteus] --gpuram deve ser inteiro 1-100" -ErrorAction Stop
+    }
+}
+
+if ($VramArg -or $GpuramArg) {
+    $gpuName = ""
+    $gpuVramTotalMB = 0
+
+    # NVIDIA via nvidia-smi
+    try {
+        $smiPath = "nvidia-smi"
+        $gpuName = (& $smiPath --query-gpu=name --format=csv,noheader 2>$null | Select-Object -First 1)
+        $gpuVramTotalMB = [int](& $smiPath --query-gpu=memory.total --format=csv,noheader,nounits 2>$null | Select-Object -First 1)
+    } catch {
+        $gpuName = ""
+    }
+
+    if ($gpuName -and $gpuVramTotalMB -gt 0) {
+        if ($VramArg) {
+            $gpuLog = " | GPU: $gpuName ($gpuVramTotalMB MB total) | VRAM target: $VramArg MB"
+        } else {
+            $targetVram = [int]([math]::Floor($gpuVramTotalMB * ([int]$GpuramArg) / 100.0))
+            $gpuLog = " | GPU: $gpuName ($gpuVramTotalMB MB total) | VRAM target: $targetVram MB ($GpuramArg%)"
+        }
+    } elseif ($gpuName) {
+        $gpuLog = " | GPU: $gpuName (sem info de VRAM)"
+    } else {
+        if ($VramArg) {
+            $gpuLog = " | GPU: nao detectada | VRAM target: $VramArg MB (nao aplicavel)"
+        } else {
+            $gpuLog = " | GPU: nao detectada | VRAM target: $GpuramArg% (nao aplicavel)"
+        }
+    }
+}
+
+Write-Host "[proteus] $cpuInfo$ramInfo$cpuLog$gpuLog" -ForegroundColor Cyan
+
+# executa o processo, aplica afinidade e limites (RAM + CPU)
 try {
     $p = Start-Process -FilePath $Command[0] -ArgumentList ($Command[1..($Command.Length - 1)]) -PassThru -NoNewWindow
     try {
@@ -347,16 +456,16 @@ try {
     }
 
     $jobHandle = [IntPtr]::Zero
-    if ($memLimitBytes -gt 0) {
+    if (($memLimitBytes -gt 0) -or ($cpuQuotaRate -gt 0)) {
         try {
             $hProcess = $p.Handle
-            $jobHandle = Set-ProcessMemoryLimit $hProcess $memLimitBytes
+            $jobHandle = Set-ProcessLimits $hProcess $memLimitBytes $cpuQuotaRate
             if ($jobHandle -ne [IntPtr]::Zero) {
-                # mantem handle vivo para o Job nao ser destruido antes do processo
+                # segura o handle pra não morrer antes do processo
                 $script:ActiveJobHandle = $jobHandle
             }
         } catch {
-            Write-Warning "[proteus] Falha ao aplicar limite de RAM: $($_.Exception.Message)"
+            Write-Warning "[proteus] Falha ao aplicar limites: $($_.Exception.Message)"
         }
     }
 

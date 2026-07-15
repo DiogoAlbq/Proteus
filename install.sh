@@ -1,7 +1,7 @@
 #!/bin/bash
-# Proteus — Instalador Linux
-# Copia o script para o PATH sobrescrevendo qualquer versao anterior.
-# Nao conecta à internet; apenas sobrescreve localmente.
+# Proteus - instala (ou atualiza) no Linux
+# Copia o script sob e sobrescreve a versão anterior.
+# Offline: não conecta na internet.
 
 set -uo pipefail
 
@@ -10,24 +10,24 @@ TARGET="$INSTALL_DIR/proteus"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC="$SRC_DIR/proteus"
 
-# Verifica que o script-fonte existe
+# confere que o arquivo fonte tá aqui
 if [[ ! -f "$SRC" ]]; then
     echo "[proteus-installer] Erro: 'proteus' nao encontrado em $SRC_DIR" >&2
     exit 1
 fi
 
-# Verifica perms de root
+# root obrigatório
 if [[ $EUID -ne 0 ]]; then
     echo "[proteus-installer] Requer root. Rode: sudo $0" >&2
     exit 1
 fi
 
-# Garante que o dir de destino exista
+# cria o dir se não existir
 if [[ ! -d "$INSTALL_DIR" ]]; then
     mkdir -p "$INSTALL_DIR"
 fi
 
-# Detecta versao antiga
+# se já tem versão instalada, sobrescreve
 if [[ -f "$TARGET" ]]; then
     OLD_VER=$(grep -m1 '^# Proteus v' "$TARGET" 2>/dev/null | sed 's/.*v//')
     echo "[proteus-installer] Versao antiga encontrada${OLD_VER:+ (v$OLD_VER)}. Sobrescrevendo..."
@@ -35,7 +35,7 @@ else
     echo "[proteus-installer] Nenhuma versao anterior encontrada. Instalando..."
 fi
 
-# Copia sobrescrevendo, ajusta perms
+# copia e acerta a permissão
 cp -f "$SRC" "$TARGET"
 chmod 755 "$TARGET"
 
